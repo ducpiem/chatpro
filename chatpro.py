@@ -1,10 +1,10 @@
 import datetime
 import random
+import sqlite3
 import uuid
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 from PIL import Image
-import psycopg2  # Thay sqlite3 bằng psycopg2
 import streamlit as st
 from streamlit_paste_button import paste_image_button
 
@@ -68,15 +68,14 @@ try:
     API_KEYS = st.secrets["GEMINI_API_KEYS"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
     USER_PASSWORD = st.secrets.get("USER_PASSWORD", "123456")
-    NEON_DB_URL = st.secrets["NEON_DATABASE_URL"]
 except KeyError:
     st.error(
-        "⚠️ Thiếu cấu hình Secrets (Cần GEMINI_API_KEYS, ADMIN_PASSWORD,"
-        " USER_PASSWORD, NEON_DATABASE_URL)."
+        "⚠️ Thiếu cấu hình Secrets (cần GEMINI_API_KEYS, ADMIN_PASSWORD,"
+        " USER_PASSWORD)."
     )
     st.stop()
 
-# 🎭 Danh sách Vai trò AI
+# 🎭 Danh sách Vai trò AI (System Persona)
 PERSONAS = {
     "✨ Trợ lý Mặc định": (
         "Bạn là một trợ lý AI thông minh, thân thiện và hữu ích."
@@ -95,6 +94,7 @@ PERSONAS = {
     ),
 }
 
+# 📋 Danh sách Model ưu tiên
 PREFERRED_MODELS = [
     "gemini-3.6-pro",
     "gemini-1.5-pro",
@@ -105,86 +105,98 @@ PREFERRED_MODELS = [
 ]
 
 
-# 3. Quản lý Kết nối Database Neon Postgres
-def run_query(query, params=(), fetch=None):
-    """Hàm wrapper hỗ trợ thực thi SQL an toàn với Neon PostgreSQL."""
-    conn = psycopg2.connect(NEON_DB_URL)
-    with conn.cursor() as cur:
-        cur.execute(query, params)
-        res = None
-        if fetch == "one":
-            res = cur.fetchone()
-        elif fetch == "all":
-            res = cur.fetchall()
-    conn.commit()
-    conn.close()
-    return res
-
-
+# 3. Khởi tạo Database SQLite & Nâng cấp Bảng
 def init_db():
-    run_query("""
+    conn = sqlite3.connect("chats.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             username TEXT,
-            is_locked INT DEFAULT 0,
+            is_locked INTEGER DEFAULT 0,
             created_at TEXT,
             title TEXT,
-            is_pinned INT DEFAULT 0
+            is_pinned INTEGER DEFAULT 0
         )
     """)
-    run_query("""
+
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+    except:
+        pass
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN is_pinned INTEGER DEFAULT 0")
+    except:
+        pass
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS messages (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id TEXT,
             role TEXT,
             content TEXT
         )
     """)
+    conn.commit()
+    return conn
 
 
-init_db()
+conn = init_db()
 
 
 # Các hàm thao tác Database
 def delete_session(session_id):
-    run_query("DELETE FROM messages WHERE session_id = %s", (session_id,))
-    run_query("DELETE FROM sessions WHERE id = %s", (session_id,))
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+    cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    conn.commit()
 
 
 def delete_user_data(username_to_del):
-    run_query(
+    cursor = conn.cursor()
+    cursor.execute(
         "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions"
-        " WHERE username = %s)",
+        " WHERE username = ?)",
         (username_to_del,),
     )
-    run_query("DELETE FROM sessions WHERE username = %s", (username_to_del,))
+    cursor.execute(
+        "DELETE FROM sessions WHERE username = ?", (username_to_del,)
+    )
+    conn.commit()
 
 
 def update_session_title(session_id, new_title):
-    run_query(
-        "UPDATE sessions SET title = %s WHERE id = %s", (new_title, session_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE sessions SET title = ? WHERE id = ?", (new_title, session_id)
     )
+    conn.commit()
 
 
 def toggle_pin_session(session_id, current_pin):
     new_pin = 0 if current_pin == 1 else 1
-    run_query(
-        "UPDATE sessions SET is_pinned = %s WHERE id = %s", (new_pin, session_id)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE sessions SET is_pinned = ? WHERE id = ?", (new_pin, session_id)
     )
+    conn.commit()
 
 
 def update_username(old_name, new_name):
-    run_query(
-        "UPDATE sessions SET username = %s WHERE username = %s",
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE sessions SET username = ? WHERE username = ?",
         (new_name, old_name),
     )
+    conn.commit()
 
 
-# 4. State Management & Query Params
+# 4. State Management & Khôi phục Đăng nhập qua Query Params (Khắc phục F5 bị văng)
 if "img_reset_key" not in st.session_state:
     st.session_state.img_reset_key = 0
 
 if "auth_status" not in st.session_state:
+    # Kiểm tra URL nếu có thông tin đăng nhập từ trước
     if "user" in st.query_params and "role" in st.query_params:
         st.session_state.auth_status = True
         st.session_state.username = st.query_params["user"]
@@ -325,47 +337,53 @@ if not st.session_state.auth_status:
                 st.session_state.auth_status = True
                 st.session_state.username = input_name.strip()
 
+                # Lưu session vào URL query params để F5 không mất
                 st.query_params["user"] = st.session_state.username
                 st.query_params["role"] = st.session_state.role
 
                 if mode == "User":
-                    last_sess = run_query(
-                        "SELECT id FROM sessions WHERE username = %s ORDER BY"
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT id FROM sessions WHERE username = ? ORDER BY"
                         " created_at DESC LIMIT 1",
                         (st.session_state.username,),
-                        fetch="one",
                     )
+                    last_sess = cursor.fetchone()
                     if last_sess:
                         st.session_state.current_session_id = last_sess[0]
                     else:
                         new_id = str(uuid.uuid4())[:8]
-                        run_query(
+                        cursor.execute(
                             "INSERT INTO sessions (id, username, created_at)"
-                            " VALUES (%s, %s, %s)",
+                            " VALUES (?, ?, ?)",
                             (
                                 new_id,
                                 st.session_state.username,
                                 str(datetime.datetime.now()),
                             ),
                         )
+                        conn.commit()
                         st.session_state.current_session_id = new_id
                 st.rerun()
             else:
                 st.error("Mật khẩu không chính xác.")
     st.stop()
 
-# Khôi phục session ID nếu vừa được auto-login
+# Khôi phục session ID nếu vừa được auto-login từ Query Params
 if st.session_state.role == "user" and not st.session_state.current_session_id:
-    last_sess = run_query(
-        "SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC"
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM sessions WHERE username = ? ORDER BY created_at DESC"
         " LIMIT 1",
         (st.session_state.username,),
-        fetch="one",
     )
+    last_sess = cursor.fetchone()
     if last_sess:
         st.session_state.current_session_id = last_sess[0]
 
 # 7. Giao diện Sidebar
+cursor = conn.cursor()
+
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
     st.session_state.selected_persona = st.selectbox(
@@ -378,103 +396,99 @@ with st.sidebar:
             "➕ Chat mới", use_container_width=True, type="primary"
         ):
             new_id = str(uuid.uuid4())[:8]
-            run_query(
-                "INSERT INTO sessions (id, username, created_at) VALUES (%s,"
-                " %s, %s)",
+            cursor.execute(
+                "INSERT INTO sessions (id, username, created_at) VALUES (?, ?,"
+                " ?)",
                 (
                     new_id,
                     st.session_state.username,
                     str(datetime.datetime.now()),
                 ),
             )
+            conn.commit()
             st.session_state.current_session_id = new_id
             st.rerun()
 
         st.write("")
         st.markdown("### 💬 Lịch sử trò chuyện")
 
-        user_sessions = run_query(
-            "SELECT id, title, is_pinned FROM sessions WHERE username = %s"
+        cursor.execute(
+            "SELECT id, title, is_pinned FROM sessions WHERE username = ?"
             " ORDER BY is_pinned DESC, created_at DESC",
             (st.session_state.username,),
-            fetch="all",
         )
+        user_sessions = cursor.fetchall()
 
-        if user_sessions:
-            for sess in user_sessions:
-                s_id, s_title, s_pin = sess
+        for sess in user_sessions:
+            s_id, s_title, s_pin = sess
 
-                if not s_title:
-                    first_msg = run_query(
-                        "SELECT content FROM messages WHERE session_id = %s AND"
-                        " role = 'user' ORDER BY id ASC LIMIT 1",
-                        (s_id,),
-                        fetch="one",
-                    )
-                    s_title = (
-                        first_msg[0][:18] + "..."
-                        if first_msg
-                        else "Phiên chat trống"
-                    )
+            if not s_title:
+                cursor.execute(
+                    "SELECT content FROM messages WHERE session_id = ? AND role"
+                    " = 'user' ORDER BY id ASC LIMIT 1",
+                    (s_id,),
+                )
+                first_msg = cursor.fetchone()
+                s_title = (
+                    first_msg[0][:18] + "..."
+                    if first_msg
+                    else "Phiên chat trống"
+                )
 
-                is_active = s_id == st.session_state.current_session_id
-                pin_icon = "📌 " if s_pin else ""
+            is_active = s_id == st.session_state.current_session_id
+            pin_icon = "📌 " if s_pin else ""
 
-                col_btn, col_opt = st.columns([0.75, 0.25])
-                with col_btn:
-                    if st.button(
-                        f"{pin_icon}{s_title}",
-                        key=f"btn_{s_id}",
-                        use_container_width=True,
-                        type="secondary" if not is_active else "primary",
-                    ):
-                        st.session_state.current_session_id = s_id
+            col_btn, col_opt = st.columns([0.75, 0.25])
+            with col_btn:
+                if st.button(
+                    f"{pin_icon}{s_title}",
+                    key=f"btn_{s_id}",
+                    use_container_width=True,
+                    type="secondary" if not is_active else "primary",
+                ):
+                    st.session_state.current_session_id = s_id
+                    st.rerun()
+
+            with col_opt:
+                with st.popover("⚙️"):
+                    pin_label = "📍 Bỏ ghim" if s_pin else "📌 Ghim lên đầu"
+                    if st.button(pin_label, key=f"pin_{s_id}"):
+                        toggle_pin_session(s_id, s_pin)
                         st.rerun()
 
-                with col_opt:
-                    with st.popover("⚙️"):
-                        pin_label = (
-                            "📍 Bỏ ghim" if s_pin else "📌 Ghim lên đầu"
-                        )
-                        if st.button(pin_label, key=f"pin_{s_id}"):
-                            toggle_pin_session(s_id, s_pin)
+                    new_title_input = st.text_input(
+                        "Tên mới:", value=s_title, key=f"inp_{s_id}"
+                    )
+                    if st.button("Lưu tên", key=f"ren_{s_id}"):
+                        if new_title_input.strip():
+                            update_session_title(s_id, new_title_input.strip())
                             st.rerun()
 
-                        new_title_input = st.text_input(
-                            "Tên mới:", value=s_title, key=f"inp_{s_id}"
-                        )
-                        if st.button("Lưu tên", key=f"ren_{s_id}"):
-                            if new_title_input.strip():
-                                update_session_title(
-                                    s_id, new_title_input.strip()
-                                )
-                                st.rerun()
-
-                        st.divider()
-                        if st.button(
-                            "🗑️ Xóa chat", key=f"del_{s_id}", type="primary"
-                        ):
-                            delete_session(s_id)
-                            if st.session_state.current_session_id == s_id:
-                                rem = run_query(
-                                    "SELECT id FROM sessions WHERE username ="
-                                    " %s ORDER BY created_at DESC LIMIT 1",
-                                    (st.session_state.username,),
-                                    fetch="one",
-                                )
-                                st.session_state.current_session_id = (
-                                    rem[0] if rem else None
-                                )
-                            st.rerun()
+                    st.divider()
+                    if st.button(
+                        "🗑️ Xóa chat", key=f"del_{s_id}", type="primary"
+                    ):
+                        delete_session(s_id)
+                        if st.session_state.current_session_id == s_id:
+                            cursor.execute(
+                                "SELECT id FROM sessions WHERE username = ?"
+                                " ORDER BY created_at DESC LIMIT 1",
+                                (st.session_state.username,),
+                            )
+                            rem = cursor.fetchone()
+                            st.session_state.current_session_id = (
+                                rem[0] if rem else None
+                            )
+                        st.rerun()
 
     elif st.session_state.role == "admin":
         st.subheader("🛠 Quản trị viên")
 
-        all_s = run_query(
-            "SELECT id, username FROM sessions ORDER BY created_at DESC",
-            fetch="all",
+        cursor.execute(
+            "SELECT id, username FROM sessions ORDER BY created_at DESC"
         )
-        options = {f"{s[1]} - {s[0]}": s[0] for s in all_s} if all_s else {}
+        all_s = cursor.fetchall()
+        options = {f"{s[1]} - {s[0]}": s[0] for s in all_s}
         sel = (
             st.selectbox("👁️ Theo dõi chat:", list(options.keys()))
             if options
@@ -486,10 +500,8 @@ with st.sidebar:
         st.divider()
 
         st.markdown("### 👥 Quản lý User")
-        all_users_res = run_query(
-            "SELECT DISTINCT username FROM sessions", fetch="all"
-        )
-        all_users = [u[0] for u in all_users_res] if all_users_res else []
+        cursor.execute("SELECT DISTINCT username FROM sessions")
+        all_users = [u[0] for u in cursor.fetchall()]
 
         if all_users:
             selected_user_to_del = st.selectbox(
@@ -547,7 +559,7 @@ with st.sidebar:
 
     if st.button("Đăng xuất", use_container_width=True):
         st.session_state.auth_status = False
-        st.query_params.clear()
+        st.query_params.clear()  # Xóa URL param khi đăng xuất
         st.rerun()
 
 # 8. Màn hình Chat Chính
@@ -559,24 +571,22 @@ active_sid = (
 
 if not active_sid and st.session_state.role == "user":
     new_id = str(uuid.uuid4())[:8]
-    run_query(
-        "INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)",
+    cursor.execute(
+        "INSERT INTO sessions (id, username, created_at) VALUES (?, ?, ?)",
         (new_id, st.session_state.username, str(datetime.datetime.now())),
     )
+    conn.commit()
     st.session_state.current_session_id = new_id
     st.rerun()
 
 db_messages = []
 if active_sid:
-    db_messages = (
-        run_query(
-            "SELECT role, content FROM messages WHERE session_id = %s ORDER BY"
-            " id ASC",
-            (active_sid,),
-            fetch="all",
-        )
-        or []
+    cursor.execute(
+        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id"
+        " ASC",
+        (active_sid,),
     )
+    db_messages = cursor.fetchall()
 
 if db_messages:
     chat_text = "\n\n".join(
@@ -624,11 +634,12 @@ if not db_messages and st.session_state.role == "user":
         )
 
     if quick_prompt:
-        run_query(
-            "INSERT INTO messages (session_id, role, content) VALUES (%s,"
-            " 'user', %s)",
+        cursor.execute(
+            "INSERT INTO messages (session_id, role, content) VALUES (?,"
+            " 'user', ?)",
             (active_sid, quick_prompt),
         )
+        conn.commit()
         st.rerun()
 
 # Render lịch sử tin nhắn
@@ -639,8 +650,9 @@ for role, content in db_messages:
     g_role = "user" if role == "user" else "model"
     gemini_history.append({"role": g_role, "parts": [content]})
 
-# 🖼️ Bộ chọn/dán ảnh
+# 🖼️ BỘ CHỌN & DÁN ẢNH (Tải từ máy + Dán trực tiếp từ Clipboard Ctrl+V)
 col_up, col_paste = st.columns([0.6, 0.4])
+
 reset_k = st.session_state.img_reset_key
 
 with col_up:
@@ -669,6 +681,7 @@ elif (
 ):
     img_data = paste_result.image_data
 
+# Xem trước ảnh + Nút Xóa ảnh nếu chọn/dán nhầm
 if img_data:
     col_img_view, col_img_del = st.columns([0.7, 0.3])
     with col_img_view:
@@ -686,23 +699,25 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
         st.markdown(prompt)
 
     user_msg_store = prompt if not img_data else f"[Đã gửi 1 hình ảnh] {prompt}"
-    run_query(
-        "INSERT INTO messages (session_id, role, content) VALUES (%s, 'user',"
-        " %s)",
+    cursor.execute(
+        "INSERT INTO messages (session_id, role, content) VALUES (?, 'user', ?)",
         (active_sid, user_msg_store),
     )
+    conn.commit()
 
     with st.chat_message("assistant"):
         with st.spinner("Đang suy luận..."):
             reply = query_gemini(prompt, gemini_history, image_data=img_data)
             st.markdown(reply)
 
-    run_query(
-        "INSERT INTO messages (session_id, role, content) VALUES (%s,"
-        " 'assistant', %s)",
+    cursor.execute(
+        "INSERT INTO messages (session_id, role, content) VALUES (?,"
+        " 'assistant', ?)",
         (active_sid, reply),
     )
+    conn.commit()
 
+    # Tự động gỡ ảnh sau khi đã gửi tin nhắn thành công
     if img_data:
         st.session_state.img_reset_key += 1
 
