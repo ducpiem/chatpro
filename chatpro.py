@@ -117,16 +117,23 @@ def query_gemini_with_rotation(prompt_text, history_list):
             except Exception:
                 pass
 
+            # Ưu tiên chọn dòng Pro xịn nhất trong list của bạn
+            candidate_pro_models = [
+                'gemini-2.5-pro',
+                'gemini-pro-latest',
+                'gemini-2.5-flash'
+            ]
+
             chosen_model = None
-            for p in ['pro', 'flash']:
-                matches = [v for v in valid_models if p in v.lower()]
-                if matches:
-                    chosen_model = matches[0]
+            for m_name in candidate_pro_models:
+                if m_name in valid_models:
+                    chosen_model = m_name
                     break
+
             if not chosen_model and valid_models:
                 chosen_model = valid_models[0]
             
-            final_model_name = chosen_model if chosen_model else 'gemini-1.5-flash'
+            final_model_name = chosen_model if chosen_model else 'gemini-2.5-flash'
             
             model = genai.GenerativeModel(final_model_name)
             chat = model.start_chat(history=history_list)
