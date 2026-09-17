@@ -66,41 +66,56 @@ def rotate_key():
         return True
     return False
 
-# 5. Hàm gọi API an toàn (Bổ sung model dự phòng)
+# 5. Hàm gọi API an toàn (Tự động dò tìm Model thông minh)
 def query_gemini(prompt_text, history_list):
     attempts = 0
     max_attempts = len(API_KEYS)
-    # Thêm 'gemini-pro' đời cũ để bao lô mọi trường hợp thư viện cũ
-    models_to_try = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
     last_error = ""
 
     while attempts < max_attempts:
         current_key = API_KEYS[st.session_state.current_key_index]
         genai.configure(api_key=current_key)
         
-        for model_name in models_to_try:
-            try:
-                model = genai.GenerativeModel(model_name)
-                if history_list:
-                    chat = model.start_chat(history=history_list)
-                    res = chat.send_message(prompt_text)
-                else:
-                    res = model.generate_content(prompt_text)
-                return res.text
-            except ResourceExhausted:
-                last_error = "Hết Quota"
-                break 
-            except Exception as e:
-                last_error = f"Lỗi {model_name}: {str(e)}"
-                continue 
-        
+        try:
+            # 1. TỰ ĐỘNG DÒ TÌM MODEL MÀ API KEY CỦA BẠN HỖ TRỢ
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            
+            # 2. Sắp xếp ưu tiên: Tìm các model mới nhất, nhanh nhất
+            best_model = None
+            for target in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-flash']:
+                if any(target in m for m in available_models):
+                    best_model = target
+                    break
+            
+            # Nếu không có model ưu tiên nào, lấy bừa model đầu tiên danh sách trả về
+            if not best_model and available_models:
+                best_model = available_models[0].replace('models/', '')
+                
+            if not best_model:
+                return "⚠️ API Key của bạn không có quyền truy cập vào bất kỳ model Chat nào."
+
+            # 3. GỌI API BẰNG MODEL ĐÃ TÌM THẤY
+            model = genai.GenerativeModel(best_model)
+            if history_list:
+                chat = model.start_chat(history=history_list)
+                res = chat.send_message(prompt_text)
+            else:
+                res = model.generate_content(prompt_text)
+            return res.text
+
+        except ResourceExhausted:
+            last_error = "Key hiện tại đã hết Quota (Lỗi 429)"
+        except Exception as e:
+            last_error = f"Lỗi: {str(e)}"
+            
+        # Nếu gặp lỗi (hết quota, v.v.), tự động xoay sang Key khác
         attempts += 1
         if rotate_key():
             st.toast(f"Đã tự động đổi API Key do lỗi.", icon="🔄")
         else:
             break
 
-    return f"⚠️ **Không thể kết nối API.** Lỗi ghi nhận: `{last_error}`. Hãy nâng cấp `google-generativeai`."
+    return f"⚠️ **Không thể kết nối API.** Lỗi: `{last_error}`. Vui lòng Reboot lại app trên Streamlit Cloud."
 
 # 6. Màn hình Đăng nhập (Nếu chưa Login)
 if not st.session_state.auth_status:
