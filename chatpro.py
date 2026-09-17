@@ -10,11 +10,65 @@ from PIL import Image
 # 1. Cấu hình trang
 st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide")
 
+# CSS Tùy chỉnh: Thanh cuộn rõ ràng + Nút cuộn Nhanh (Scroll Buttons)
 st.markdown("""
 <style>
-    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 950px; }
+    /* Làm đẹp thanh cuộn trình duyệt */
+    ::-webkit-scrollbar {
+        width: 10px;
+    }
+    ::-webkit-scrollbar-track {
+        background: #f1f1f1;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #888;
+        border-radius: 5px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #555;
+    }
+
+    .block-container { padding-top: 1.5rem; padding-bottom: 5rem; max-width: 950px; }
     .stChatInputContainer { padding-bottom: 10px; }
+
+    /* Nút cuộn nhanh nổi ở góc phải */
+    .scroll-btn-container {
+        position: fixed;
+        bottom: 80px;
+        right: 25px;
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    .scroll-btn {
+        background-color: #4285F4;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 42px;
+        height: 42px;
+        font-size: 20px;
+        cursor: pointer;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0.85;
+        transition: 0.3s;
+    }
+    .scroll-btn:hover {
+        opacity: 1;
+        transform: scale(1.1);
+        background-color: #3367D6;
+    }
 </style>
+
+<!-- HTML & JS Tạo 2 Nút Cuộn Trang Nhanh -->
+<div class="scroll-btn-container">
+    <button class="scroll-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'});" title="Lên đầu trang">⬆️</button>
+    <button class="scroll-btn" onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});" title="Xuống cuối trang">⬇️</button>
+</div>
 """, unsafe_allow_html=True)
 
 # 2. Kiểm tra Secrets
@@ -34,7 +88,7 @@ PERSONAS = {
     "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu."
 }
 
-# 📋 Danh sách Model ưu tiên theo yêu cầu của bạn
+# 📋 Danh sách Model ưu tiên
 PREFERRED_MODELS = [
     'gemini-3.6-pro',
     'gemini-1.5-pro',
@@ -84,6 +138,14 @@ def delete_session(session_id):
     cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     conn.commit()
 
+def delete_user_data(username_to_del):
+    cursor = conn.cursor()
+    # Xóa tất cả tin nhắn thuộc các session của user này
+    cursor.execute("DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE username = ?)", (username_to_del,))
+    # Xóa tất cả session của user này
+    cursor.execute("DELETE FROM sessions WHERE username = ?", (username_to_del,))
+    conn.commit()
+
 def update_session_title(session_id, new_title):
     cursor = conn.cursor()
     cursor.execute("UPDATE sessions SET title = ? WHERE id = ?", (new_title, session_id))
@@ -122,7 +184,7 @@ def rotate_key(reason="Lỗi"):
         st.session_state.current_key_index = (idx + 1) % len(API_KEYS)
         return False
 
-# 5. Hàm gọi API Gemini thông minh (Thử lần lượt danh sách model yêu thích)
+# 5. Hàm gọi API Gemini
 def query_gemini(prompt_text, history_list, image_data=None):
     attempts = 0
     max_attempts = len(API_KEYS)
@@ -133,28 +195,23 @@ def query_gemini(prompt_text, history_list, image_data=None):
         genai.configure(api_key=current_key)
         system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
 
-        # 1. Tự động lấy danh sách model thực tế từ API
         try:
             available_models = [m.name.replace('models/', '') for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         except Exception:
             available_models = []
 
-        # 2. Xây dựng danh sách ưu tiên: Thử danh sách yêu thích trước
         models_to_try = []
         for target in PREFERRED_MODELS:
-            # Nếu model có sẵn trong API thì đưa lên đầu
             matched = [am for am in available_models if target in am]
             if matched:
                 models_to_try.extend(matched)
             else:
                 models_to_try.append(target)
 
-        # Thêm các model dự phòng khác nếu có
         for am in available_models:
             if am not in models_to_try:
                 models_to_try.append(am)
 
-        # 3. Thử từng model trong danh sách
         for model_name in models_to_try:
             try:
                 model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
@@ -173,9 +230,8 @@ def query_gemini(prompt_text, history_list, image_data=None):
 
             except ResourceExhausted:
                 last_error = "Key hết Quota (Lỗi 429)"
-                break  # Nhảy ra ngoài để xoay Key khác
+                break
             except Exception as e:
-                # Nếu model bị lỗi 404 hoặc không hỗ trợ, tự động bỏ qua và thử model tiếp theo
                 last_error = f"{model_name}: {str(e)}"
                 continue
 
@@ -286,26 +342,48 @@ with st.sidebar:
 
     elif st.session_state.role == "admin":
         st.subheader("🛠 Quản trị viên")
+
+        # 1. Theo dõi Chat của User
         cursor.execute("SELECT id, username FROM sessions ORDER BY created_at DESC")
         all_s = cursor.fetchall()
         options = {f"{s[1]} - {s[0]}": s[0] for s in all_s}
-        sel = st.selectbox("Theo dõi chat:", list(options.keys())) if options else None
+        sel = st.selectbox("👁️ Theo dõi chat:", list(options.keys())) if options else None
         if sel:
             st.session_state.admin_selected_session = options[sel]
 
+        st.divider()
+
+        # 2. CHỨC NĂNG MỚI: Quản lý & Xóa User
+        st.markdown("### 👥 Quản lý User")
+        cursor.execute("SELECT DISTINCT username FROM sessions")
+        all_users = [u[0] for u in cursor.fetchall()]
+
+        if all_users:
+            selected_user_to_del = st.selectbox("Chọn User cần xóa:", all_users)
+            with st.popover(f"🗑️ Xóa User: {selected_user_to_del}"):
+                st.warning(f"⚠️ Thao tác này sẽ XÓA SẠCH toàn bộ dữ liệu lịch sử chat của user '{selected_user_to_del}'!")
+                if st.button("Xác nhận Xóa User", type="primary", key="confirm_del_user"):
+                    delete_user_data(selected_user_to_del)
+                    st.success(f"Đã xóa thành công User {selected_user_to_del}!")
+                    st.session_state.admin_selected_session = None
+                    st.rerun()
+        else:
+            st.caption("Chưa có User nào trong hệ thống.")
+
     st.divider()
 
-    # 👤 Đổi tên User
-    with st.expander(f"👤 Tài khoản: {st.session_state.username}", expanded=False):
-        new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
-        if st.button("Cập nhật tên"):
-            if new_username.strip() and new_username != st.session_state.username:
-                update_username(st.session_state.username, new_username.strip())
-                st.session_state.username = new_username.strip()
-                st.success("Đã đổi tên!")
-                st.rerun()
+    # 👤 Đổi tên User (Chỉ hiện cho User)
+    if st.session_state.role == "user":
+        with st.expander(f"👤 Tài khoản: {st.session_state.username}", expanded=False):
+            new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
+            if st.button("Cập nhật tên"):
+                if new_username.strip() and new_username != st.session_state.username:
+                    update_username(st.session_state.username, new_username.strip())
+                    st.session_state.username = new_username.strip()
+                    st.success("Đã đổi tên!")
+                    st.rerun()
 
-    # 🔑 Giám sát API Key & Model đang hoạt động
+    # 🔑 Giám sát API Key
     with st.expander("🔑 Trạng thái API Keys", expanded=False):
         for idx, status in st.session_state.key_status.items():
             active_mark = "👈 (Đang dùng)" if idx == st.session_state.current_key_index else ""
@@ -325,8 +403,10 @@ if not active_sid and st.session_state.role == "user":
     st.session_state.current_session_id = new_id
     st.rerun()
 
-cursor.execute("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC", (active_sid,))
-db_messages = cursor.fetchall()
+db_messages = []
+if active_sid:
+    cursor.execute("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC", (active_sid,))
+    db_messages = cursor.fetchall()
 
 # 📥 Export Chat
 if db_messages:
