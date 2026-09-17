@@ -1,3 +1,4 @@
 streamlit
 google-generativeai>=0.8.3
 pillow
+streamlit-paste-button
