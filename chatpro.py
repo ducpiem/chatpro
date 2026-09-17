@@ -6,6 +6,7 @@ import sqlite3
 import datetime
 import uuid
 from PIL import Image
+from streamlit_paste_button import paste_image_button
 
 # 1. Cấu hình trang
 st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide")
@@ -13,25 +14,14 @@ st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide"
 # CSS Tùy chỉnh: Thanh cuộn rõ ràng + Nút cuộn Nhanh (Scroll Buttons)
 st.markdown("""
 <style>
-    /* Làm đẹp thanh cuộn trình duyệt */
-    ::-webkit-scrollbar {
-        width: 10px;
-    }
-    ::-webkit-scrollbar-track {
-        background: #f1f1f1;
-    }
-    ::-webkit-scrollbar-thumb {
-        background: #888;
-        border-radius: 5px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-        background: #555;
-    }
+    ::-webkit-scrollbar { width: 10px; }
+    ::-webkit-scrollbar-track { background: #f1f1f1; }
+    ::-webkit-scrollbar-thumb { background: #888; border-radius: 5px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
 
     .block-container { padding-top: 1.5rem; padding-bottom: 5rem; max-width: 950px; }
     .stChatInputContainer { padding-bottom: 10px; }
 
-    /* Nút cuộn nhanh nổi ở góc phải */
     .scroll-btn-container {
         position: fixed;
         bottom: 80px;
@@ -64,7 +54,6 @@ st.markdown("""
     }
 </style>
 
-<!-- HTML & JS Tạo 2 Nút Cuộn Trang Nhanh -->
 <div class="scroll-btn-container">
     <button class="scroll-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'});" title="Lên đầu trang">⬆️</button>
     <button class="scroll-btn" onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});" title="Xuống cuối trang">⬇️</button>
@@ -140,9 +129,7 @@ def delete_session(session_id):
 
 def delete_user_data(username_to_del):
     cursor = conn.cursor()
-    # Xóa tất cả tin nhắn thuộc các session của user này
     cursor.execute("DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE username = ?)", (username_to_del,))
-    # Xóa tất cả session của user này
     cursor.execute("DELETE FROM sessions WHERE username = ?", (username_to_del,))
     conn.commit()
 
@@ -343,7 +330,6 @@ with st.sidebar:
     elif st.session_state.role == "admin":
         st.subheader("🛠 Quản trị viên")
 
-        # 1. Theo dõi Chat của User
         cursor.execute("SELECT id, username FROM sessions ORDER BY created_at DESC")
         all_s = cursor.fetchall()
         options = {f"{s[1]} - {s[0]}": s[0] for s in all_s}
@@ -353,7 +339,6 @@ with st.sidebar:
 
         st.divider()
 
-        # 2. CHỨC NĂNG MỚI: Quản lý & Xóa User
         st.markdown("### 👥 Quản lý User")
         cursor.execute("SELECT DISTINCT username FROM sessions")
         all_users = [u[0] for u in cursor.fetchall()]
@@ -372,7 +357,6 @@ with st.sidebar:
 
     st.divider()
 
-    # 👤 Đổi tên User (Chỉ hiện cho User)
     if st.session_state.role == "user":
         with st.expander(f"👤 Tài khoản: {st.session_state.username}", expanded=False):
             new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
@@ -383,7 +367,6 @@ with st.sidebar:
                     st.success("Đã đổi tên!")
                     st.rerun()
 
-    # 🔑 Giám sát API Key
     with st.expander("🔑 Trạng thái API Keys", expanded=False):
         for idx, status in st.session_state.key_status.items():
             active_mark = "👈 (Đang dùng)" if idx == st.session_state.current_key_index else ""
@@ -408,12 +391,10 @@ if active_sid:
     cursor.execute("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC", (active_sid,))
     db_messages = cursor.fetchall()
 
-# 📥 Export Chat
 if db_messages:
     chat_text = "\n\n".join([f"**{m[0].upper()}**: {m[1]}" for m in db_messages])
     st.download_button("📥 Tải lịch sử chat (.md)", data=chat_text, file_name=f"chat_{active_sid}.md", mime="text/markdown")
 
-# 💡 Quick Chips khi trang trống
 if not db_messages and st.session_state.role == "user":
     st.write("<br>", unsafe_allow_html=True)
     st.markdown(f"<h1 style='background: -webkit-linear-gradient(45deg, #4285F4, #D96570); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>Xin chào, {st.session_state.username}</h1>", unsafe_allow_html=True)
@@ -442,12 +423,29 @@ for role, content in db_messages:
     g_role = "user" if role == "user" else "model"
     gemini_history.append({"role": g_role, "parts": [content]})
 
-# 🖼️ Upload Ảnh
-uploaded_file = st.file_uploader("🖼️ Tải ảnh lên (Tùy chọn):", type=["jpg", "jpeg", "png", "webp"], label_visibility="collapsed")
+# 🖼️ BỘ CHỌN & DÁN ẢNH (Tải từ máy + Dán trực tiếp từ Clipboard Ctrl+V)
+col_up, col_paste = st.columns([0.6, 0.4])
+
+with col_up:
+    uploaded_file = st.file_uploader("🖼️ Tải ảnh từ máy:", type=["jpg", "jpeg", "png", "webp"], label_visibility="collapsed")
+
+with col_paste:
+    # Nút Dán ảnh Clipboard chuẩn chỉnh
+    paste_result = paste_image_button(
+        label="📋 Dán ảnh từ Clipboard (Ctrl+V)",
+        background_color="#4285F4",
+        hover_background_color="#3367D6",
+        color="#ffffff",
+    )
+
 img_data = None
 if uploaded_file:
     img_data = Image.open(uploaded_file)
-    st.image(img_data, caption="Ảnh bạn đã tải lên", width=250)
+elif paste_result.image_data is not None:
+    img_data = paste_result.image_data
+
+if img_data:
+    st.image(img_data, caption="Ảnh đã chọn / vừa dán", width=220)
 
 # Ô nhập nội dung
 if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
@@ -455,7 +453,7 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
         if img_data: st.image(img_data, width=200)
         st.markdown(prompt)
 
-    user_msg_store = prompt if not uploaded_file else f"[Đã gửi 1 hình ảnh] {prompt}"
+    user_msg_store = prompt if not img_data else f"[Đã gửi 1 hình ảnh] {prompt}"
     cursor.execute("INSERT INTO messages (session_id, role, content) VALUES (?, 'user', ?)", (active_sid, user_msg_store))
     conn.commit()
 
