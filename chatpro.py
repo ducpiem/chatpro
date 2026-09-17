@@ -81,8 +81,9 @@ def query_gemini(prompt_text, history_list):
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             
             # 2. Sắp xếp ưu tiên: Đưa gemini-3.6 (mới nhất) lên đầu theo đúng yêu cầu của Google
+            #'gemini-3.6-flash', 'gemini-3.6-pro', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'
             best_model = None
-            for target in ['gemini-3.6-flash', 'gemini-3.6-pro', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']:
+            for target in ['gemini-3.6-pro', 'gemini-1.5-pro', 'gemini-3.6-flash', 'gemini-1.5-flash', 'gemini-3.5-flash', 'gemini-2.5-flash']:
                 if any(target in m for m in available_models):
                     best_model = target
                     break
