@@ -102,15 +102,32 @@ def query_gemini_with_rotation(prompt_text, history_list):
     max_attempts = len(API_KEYS)
     response_text = ""
 
+    # Thử danh sách model phổ biến từ chuẩn đến gọn nhẹ
+    candidate_models = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro']
+
     while not success and attempts < max_attempts:
         try:
             current_key = API_KEYS[st.session_state.current_key_index]
             genai.configure(api_key=current_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            chat = model.start_chat(history=history_list)
-            res = chat.send_message(prompt_text)
-            response_text = res.text
-            success = True
+            
+            # Thử lần lượt các tên model nếu gặp lỗi tương thích
+            res = None
+            last_err = None
+            for m_name in candidate_models:
+                try:
+                    model = genai.GenerativeModel(m_name)
+                    chat = model.start_chat(history=history_list)
+                    res = chat.send_message(prompt_text)
+                    response_text = res.text
+                    success = True
+                    break
+                except Exception as sub_e:
+                    last_err = sub_e
+                    continue
+            
+            if not success and last_err:
+                raise last_err
+                
         except ResourceExhausted:
             attempts += 1
             old_idx = st.session_state.current_key_index
@@ -122,7 +139,7 @@ def query_gemini_with_rotation(prompt_text, history_list):
             return f"Lỗi gọi API: {str(e)}"
     
     if not success:
-        return "Tất cả API keys đều đang quá tải, vui lòng thử lại sau vài giây."
+        return "Tất cả API keys đều đang quá tải hoặc không hỗ trợ model. Vui lòng kiểm tra lại quyền API Key trên Google AI Studio."
     return response_text
 
 # Sidebar quản trị / User menu
