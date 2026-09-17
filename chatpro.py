@@ -1,3 +1,11 @@
+with st.expander("🔍 Debug Models thực tế trên Key hiện tại", expanded=True):
+    try:
+        genai.configure(api_key=API_KEYS[0])
+        st.write("Đang test list_models cho Key #1:")
+        for m in genai.list_models():
+            st.write(f"- Name: `{m.name}` | Methods: `{m.supported_generation_methods}`")
+    except Exception as e:
+        st.error(f"Lỗi list_models: {e}")
 import streamlit as st
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
