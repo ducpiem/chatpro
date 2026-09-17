@@ -1,11 +1,3 @@
-with st.expander("🔍 Debug Models thực tế trên Key hiện tại", expanded=True):
-    try:
-        genai.configure(api_key=API_KEYS[0])
-        st.write("Đang test list_models cho Key #1:")
-        for m in genai.list_models():
-            st.write(f"- Name: `{m.name}` | Methods: `{m.supported_generation_methods}`")
-    except Exception as e:
-        st.error(f"Lỗi list_models: {e}")
 import streamlit as st
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
@@ -14,9 +6,10 @@ import sqlite3
 import datetime
 import uuid
 
+# 1. Cấu hình trang (phải đặt ngay sau import)
 st.set_page_config(page_title="Gemini Multi-User Pro", page_icon="🔒", layout="wide")
 
-# Đọc secrets
+# 2. Đọc secrets
 try:
     API_KEYS = st.secrets["GEMINI_API_KEYS"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
@@ -25,7 +18,7 @@ except KeyError:
     st.error("⚠️ Thiếu cấu hình Secrets trên Streamlit Cloud (cần ADMIN_PASSWORD, USER_PASSWORD, GEMINI_API_KEYS).")
     st.stop()
 
-# Khởi tạo SQLite database cục bộ
+# 3. Khởi tạo SQLite database cục bộ
 def init_db():
     conn = sqlite3.connect("chats.db", check_same_thread=False)
     cursor = conn.cursor()
@@ -50,7 +43,7 @@ def init_db():
 
 conn = init_db()
 
-# Khởi tạo session state
+# 4. Khởi tạo session state
 if "auth_status" not in st.session_state:
     st.session_state.auth_status = False
 if "role" not in st.session_state:
@@ -91,7 +84,6 @@ if not st.session_state.auth_status:
                 st.session_state.auth_status = True
                 st.session_state.role = "user"
                 st.session_state.username = input_name.strip()
-                # Tạo session mới cho user
                 sess_id = str(uuid.uuid4())[:8]
                 cursor = conn.cursor()
                 cursor.execute("INSERT INTO sessions VALUES (?, ?, 0, ?)", 
@@ -103,39 +95,45 @@ if not st.session_state.auth_status:
                 st.error("Sai mật khẩu hoặc thông tin đăng nhập!")
     st.stop()
 
-# Xử lý xoay vòng API gửi prompt (Đổi sang gemini-1.5-flash để fix lỗi 404)
+# Xử lý xoay vòng API gửi prompt (tự động dò model hỗ trợ thực tế của key)
 def query_gemini_with_rotation(prompt_text, history_list):
     success = False
     attempts = 0
     max_attempts = len(API_KEYS)
     response_text = ""
-
-    # Thử danh sách model phổ biến từ chuẩn đến gọn nhẹ
-    candidate_models = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro']
+    final_model_name = "unknown"
 
     while not success and attempts < max_attempts:
         try:
             current_key = API_KEYS[st.session_state.current_key_index]
             genai.configure(api_key=current_key)
             
-            # Thử lần lượt các tên model nếu gặp lỗi tương thích
-            res = None
-            last_err = None
-            for m_name in candidate_models:
-                try:
-                    model = genai.GenerativeModel(m_name)
-                    chat = model.start_chat(history=history_list)
-                    res = chat.send_message(prompt_text)
-                    response_text = res.text
-                    success = True
+            # Quét danh sách model hợp lệ của key này
+            valid_models = []
+            try:
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        valid_models.append(m.name.replace("models/", ""))
+            except Exception:
+                pass
+
+            chosen_model = None
+            for p in ['pro', 'flash']:
+                matches = [v for v in valid_models if p in v.lower()]
+                if matches:
+                    chosen_model = matches[0]
                     break
-                except Exception as sub_e:
-                    last_err = sub_e
-                    continue
+            if not chosen_model and valid_models:
+                chosen_model = valid_models[0]
             
-            if not success and last_err:
-                raise last_err
-                
+            final_model_name = chosen_model if chosen_model else 'gemini-1.5-flash'
+            
+            model = genai.GenerativeModel(final_model_name)
+            chat = model.start_chat(history=history_list)
+            res = chat.send_message(prompt_text)
+            response_text = res.text
+            success = True
+            
         except ResourceExhausted:
             attempts += 1
             old_idx = st.session_state.current_key_index
@@ -143,19 +141,32 @@ def query_gemini_with_rotation(prompt_text, history_list):
                 st.toast(f"Key {old_idx+1} quá tải, đã đổi sang Key {st.session_state.current_key_index+1}", icon="🔄")
             else:
                 break
-        except Exception as e:
-            return f"Lỗi gọi API: {str(e)}"
+        except Exception:
+            attempts += 1
+            old_idx = st.session_state.current_key_index
+            if rotate_key_randomly():
+                continue
+            break
     
     if not success:
-        return "Tất cả API keys đều đang quá tải hoặc không hỗ trợ model. Vui lòng kiểm tra lại quyền API Key trên Google AI Studio."
+        return f"Tất cả API keys đều lỗi hoặc không hỗ trợ generateContent. Model thử cuối: {final_model_name}"
     return response_text
 
 # Sidebar quản trị / User menu
 with st.sidebar:
     st.write(f"👤 **{st.session_state.username}** ({st.session_state.role.upper()})")
     
+    # 🔍 Thêm công cụ check model ngay trên sidebar an toàn
+    with st.expander("🔍 Debug Models Key hiện tại"):
+        if st.button("Kiểm tra danh sách model"):
+            try:
+                genai.configure(api_key=API_KEYS[st.session_state.current_key_index])
+                ms = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                st.write(ms)
+            except Exception as e:
+                st.error(f"Lỗi: {e}")
+
     if st.session_state.role == "user":
-        # Tính năng đổi tên user
         new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
         if st.button("Lưu tên mới"):
             if new_username.strip():
@@ -231,10 +242,10 @@ if not active_sid:
     st.info("Vui lòng chọn phiên chat hoặc tạo phiên mới.")
     st.stop()
 
-# Kiểm tra quyền truy cập locked
 cursor = conn.cursor()
 cursor.execute("SELECT username, is_locked FROM sessions WHERE id = ?", (active_sid,))
 sess_info = cursor.fetchone()
+owner_name = None
 
 if sess_info:
     owner_name, locked_state = sess_info
@@ -244,7 +255,6 @@ if sess_info:
 
 st.title(f"🤖 Chat Pro (Phiên: {active_sid})")
 
-# Load lịch sử từ DB
 cursor.execute("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC", (active_sid,))
 db_messages = cursor.fetchall()
 
@@ -255,10 +265,10 @@ for role, content in db_messages:
     g_role = "user" if role == "user" else "model"
     gemini_history.append({"role": g_role, "parts": [content]})
 
-# Xử lý input chat
 if prompt := st.chat_input("Nhập câu hỏi..."):
     cursor.execute("SELECT is_locked FROM sessions WHERE id = ?", (active_sid,))
-    if cursor.fetchone()[0] == 1 and st.session_state.role == "user" and st.session_state.username != owner_name:
+    row_lock = cursor.fetchone()
+    if row_lock and row_lock[0] == 1 and st.session_state.role == "user" and st.session_state.username != owner_name:
         st.error("Không thể gửi tin nhắn vào phiên đã khóa.")
         st.stop()
 
