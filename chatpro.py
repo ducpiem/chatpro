@@ -10,65 +10,11 @@ from PIL import Image
 # 1. Cấu hình trang
 st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide")
 
-# CSS Tùy chỉnh: Thanh cuộn rõ ràng + Nút cuộn Nhanh (Scroll Buttons)
 st.markdown("""
 <style>
-    /* Làm đẹp thanh cuộn trình duyệt */
-    ::-webkit-scrollbar {
-        width: 10px;
-    }
-    ::-webkit-scrollbar-track {
-        background: #f1f1f1;
-    }
-    ::-webkit-scrollbar-thumb {
-        background: #888;
-        border-radius: 5px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-        background: #555;
-    }
-
-    .block-container { padding-top: 1.5rem; padding-bottom: 5rem; max-width: 950px; }
+    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 950px; }
     .stChatInputContainer { padding-bottom: 10px; }
-
-    /* Nut cuon nhanh noi o goc phai */
-    .scroll-btn-container {
-        position: fixed;
-        bottom: 80px;
-        right: 25px;
-        z-index: 99999;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-    }
-    .scroll-btn {
-        background-color: #4285F4;
-        color: white;
-        border: none;
-        border-radius: 50%;
-        width: 42px;
-        height: 42px;
-        font-size: 20px;
-        cursor: pointer;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        opacity: 0.85;
-        transition: 0.3s;
-    }
-    .scroll-btn:hover {
-        opacity: 1;
-        transform: scale(1.1);
-        background-color: #3367D6;
-    }
 </style>
-
-<!-- HTML & JS Tao 2 Nut Cuon Trang Nhanh -->
-<div class="scroll-btn-container">
-    <button class="scroll-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'});" title="Lên đầu trang">⬆️</button>
-    <button class="scroll-btn" onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});" title="Xuống cuối trang">⬇️</button>
-</div>
 """, unsafe_allow_html=True)
 
 # 2. Kiểm tra Secrets
@@ -88,7 +34,7 @@ PERSONAS = {
     "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu."
 }
 
-# 📋 Danh sách Model ưu tiên
+# 📋 Danh sách Model ưu tiên theo yêu cầu của bạn
 PREFERRED_MODELS = [
     'gemini-3.6-pro',
     'gemini-1.5-pro',
@@ -176,7 +122,7 @@ def rotate_key(reason="Lỗi"):
         st.session_state.current_key_index = (idx + 1) % len(API_KEYS)
         return False
 
-# 5. Hàm gọi API Gemini
+# 5. Hàm gọi API Gemini thông minh (Thử lần lượt danh sách model yêu thích)
 def query_gemini(prompt_text, history_list, image_data=None):
     attempts = 0
     max_attempts = len(API_KEYS)
@@ -187,23 +133,28 @@ def query_gemini(prompt_text, history_list, image_data=None):
         genai.configure(api_key=current_key)
         system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
 
+        # 1. Tự động lấy danh sách model thực tế từ API
         try:
             available_models = [m.name.replace('models/', '') for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         except Exception:
             available_models = []
 
+        # 2. Xây dựng danh sách ưu tiên: Thử danh sách yêu thích trước
         models_to_try = []
         for target in PREFERRED_MODELS:
+            # Nếu model có sẵn trong API thì đưa lên đầu
             matched = [am for am in available_models if target in am]
             if matched:
                 models_to_try.extend(matched)
             else:
                 models_to_try.append(target)
 
+        # Thêm các model dự phòng khác nếu có
         for am in available_models:
             if am not in models_to_try:
                 models_to_try.append(am)
 
+        # 3. Thử từng model trong danh sách
         for model_name in models_to_try:
             try:
                 model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
@@ -222,8 +173,9 @@ def query_gemini(prompt_text, history_list, image_data=None):
 
             except ResourceExhausted:
                 last_error = "Key hết Quota (Lỗi 429)"
-                break
+                break  # Nhảy ra ngoài để xoay Key khác
             except Exception as e:
+                # Nếu model bị lỗi 404 hoặc không hỗ trợ, tự động bỏ qua và thử model tiếp theo
                 last_error = f"{model_name}: {str(e)}"
                 continue
 
@@ -353,11 +305,10 @@ with st.sidebar:
                 st.success("Đã đổi tên!")
                 st.rerun()
 
-    # 🔑 Giám sát API Key
+    # 🔑 Giám sát API Key & Model đang hoạt động
     with st.expander("🔑 Trạng thái API Keys", expanded=False):
         for idx, status in st.session_state.key_status.items():
-            active_mark = "👈 (Đang dùng)" if idx == st
-.session_state.current_key_index else ""
+            active_mark = "👈 (Đang dùng)" if idx == st.session_state.current_key_index else ""
             st.caption(f"**Key #{idx+1}:** {status} {active_mark}")
 
     if st.button("Đăng xuất", use_container_width=True):
