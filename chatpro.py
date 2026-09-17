@@ -18,9 +18,9 @@ except KeyError:
     st.error("⚠️ Thiếu cấu hình Secrets (cần GEMINI_API_KEYS, ADMIN_PASSWORD, USER_PASSWORD).")
     st.stop()
 
-# 3. Khởi tạo Database SQLite
+# 3. Khởi tạo Database SQLite (Đã sửa lỗi dấu ngoặc chuẩn 100%)
 def init_db():
-    conn = sqlite3.connect("chats.db", check_same_thread=False) if hasattr(sqlite3, 'check_sound_thread') else False, check_same_thread=False)
+    conn = sqlite3.connect("chats.db", check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
