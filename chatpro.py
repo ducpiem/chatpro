@@ -11,7 +11,7 @@ from streamlit_paste_button import paste_image_button
 # 1. Cấu hình trang
 st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide")
 
-# CSS Tùy chỉnh: Thanh cuộn rõ ràng + Nút cuộn Nhanh (Scroll Buttons)
+# CSS Tùy chỉnh
 st.markdown(
     """
 <style>
@@ -191,9 +191,19 @@ def update_username(old_name, new_name):
     conn.commit()
 
 
-# 4. State Management
+# 4. State Management & Khôi phục Đăng nhập qua Query Params (Khắc phục F5 bị văng)
+if "img_reset_key" not in st.session_state:
+    st.session_state.img_reset_key = 0
+
 if "auth_status" not in st.session_state:
-    st.session_state.auth_status = False
+    # Kiểm tra URL nếu có thông tin đăng nhập từ trước
+    if "user" in st.query_params and "role" in st.query_params:
+        st.session_state.auth_status = True
+        st.session_state.username = st.query_params["user"]
+        st.session_state.role = st.query_params["role"]
+    else:
+        st.session_state.auth_status = False
+
 if "role" not in st.session_state:
     st.session_state.role = None
 if "username" not in st.session_state:
@@ -327,6 +337,10 @@ if not st.session_state.auth_status:
                 st.session_state.auth_status = True
                 st.session_state.username = input_name.strip()
 
+                # Lưu session vào URL query params để F5 không mất
+                st.query_params["user"] = st.session_state.username
+                st.query_params["role"] = st.session_state.role
+
                 if mode == "User":
                     cursor = conn.cursor()
                     cursor.execute(
@@ -354,6 +368,18 @@ if not st.session_state.auth_status:
             else:
                 st.error("Mật khẩu không chính xác.")
     st.stop()
+
+# Khôi phục session ID nếu vừa được auto-login từ Query Params
+if st.session_state.role == "user" and not st.session_state.current_session_id:
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id FROM sessions WHERE username = ? ORDER BY created_at DESC"
+        " LIMIT 1",
+        (st.session_state.username,),
+    )
+    last_sess = cursor.fetchone()
+    if last_sess:
+        st.session_state.current_session_id = last_sess[0]
 
 # 7. Giao diện Sidebar
 cursor = conn.cursor()
@@ -518,6 +544,7 @@ with st.sidebar:
                         st.session_state.username, new_username.strip()
                     )
                     st.session_state.username = new_username.strip()
+                    st.query_params["user"] = st.session_state.username
                     st.success("Đã đổi tên!")
                     st.rerun()
 
@@ -532,6 +559,7 @@ with st.sidebar:
 
     if st.button("Đăng xuất", use_container_width=True):
         st.session_state.auth_status = False
+        st.query_params.clear()  # Xóa URL param khi đăng xuất
         st.rerun()
 
 # 8. Màn hình Chat Chính
@@ -625,21 +653,23 @@ for role, content in db_messages:
 # 🖼️ BỘ CHỌN & DÁN ẢNH (Tải từ máy + Dán trực tiếp từ Clipboard Ctrl+V)
 col_up, col_paste = st.columns([0.6, 0.4])
 
+reset_k = st.session_state.img_reset_key
+
 with col_up:
     uploaded_file = st.file_uploader(
         "🖼️ Tải ảnh từ máy:",
         type=["jpg", "jpeg", "png", "webp"],
         label_visibility="collapsed",
+        key=f"uploader_{reset_k}",
     )
 
 with col_paste:
-    # Đã sửa tham số 'color' -> 'text_color' và thêm 'key'
     paste_result = paste_image_button(
         label="📋 Dán ảnh từ Clipboard (Ctrl+V)",
         background_color="#4285F4",
         hover_background_color="#3367D6",
         text_color="#ffffff",
-        key="paste_image_btn",
+        key=f"paste_btn_{reset_k}",
     )
 
 img_data = None
@@ -651,8 +681,15 @@ elif (
 ):
     img_data = paste_result.image_data
 
+# Xem trước ảnh + Nút Xóa ảnh nếu chọn/dán nhầm
 if img_data:
-    st.image(img_data, caption="Ảnh đã chọn / vừa dán", width=220)
+    col_img_view, col_img_del = st.columns([0.7, 0.3])
+    with col_img_view:
+        st.image(img_data, caption="Ảnh chờ gửi", width=180)
+    with col_img_del:
+        if st.button("❌ Hủy/Xóa ảnh", key=f"del_img_{reset_k}"):
+            st.session_state.img_reset_key += 1
+            st.rerun()
 
 # Ô nhập nội dung
 if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
@@ -679,5 +716,9 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
         (active_sid, reply),
     )
     conn.commit()
+
+    # Tự động gỡ ảnh sau khi đã gửi tin nhắn thành công
+    if img_data:
+        st.session_state.img_reset_key += 1
 
     st.rerun()
