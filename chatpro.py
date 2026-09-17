@@ -77,24 +77,24 @@ def query_gemini(prompt_text, history_list):
         genai.configure(api_key=current_key)
         
         try:
-            # 1. TỰ ĐỘNG DÒ TÌM MODEL MÀ API KEY CỦA BẠN HỖ TRỢ
+            # 1. Tự động lấy danh sách model mà Google đang cho phép
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             
-            # 2. Sắp xếp ưu tiên: Tìm các model mới nhất, nhanh nhất
+            # 2. Sắp xếp ưu tiên: Đưa gemini-3.6 (mới nhất) lên đầu theo đúng yêu cầu của Google
             best_model = None
-            for target in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-flash']:
+            for target in ['gemini-3.6-flash', 'gemini-3.6-pro', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash']:
                 if any(target in m for m in available_models):
                     best_model = target
                     break
             
-            # Nếu không có model ưu tiên nào, lấy bừa model đầu tiên danh sách trả về
+            # Nếu không tìm thấy các tên trên, lấy đại model đầu tiên mà API Key này được phép dùng
             if not best_model and available_models:
                 best_model = available_models[0].replace('models/', '')
                 
             if not best_model:
                 return "⚠️ API Key của bạn không có quyền truy cập vào bất kỳ model Chat nào."
 
-            # 3. GỌI API BẰNG MODEL ĐÃ TÌM THẤY
+            # 3. Tiến hành gọi API
             model = genai.GenerativeModel(best_model)
             if history_list:
                 chat = model.start_chat(history=history_list)
@@ -108,14 +108,15 @@ def query_gemini(prompt_text, history_list):
         except Exception as e:
             last_error = f"Lỗi: {str(e)}"
             
-        # Nếu gặp lỗi (hết quota, v.v.), tự động xoay sang Key khác
+        # Tự động xoay sang Key khác nếu lỗi
         attempts += 1
+        old_idx = st.session_state.current_key_index
         if rotate_key():
             st.toast(f"Đã tự động đổi API Key do lỗi.", icon="🔄")
         else:
             break
 
-    return f"⚠️ **Không thể kết nối API.** Lỗi: `{last_error}`. Vui lòng Reboot lại app trên Streamlit Cloud."
+    return f"⚠️ **Không thể kết nối API.** Lỗi: `{last_error}`"
 
 # 6. Màn hình Đăng nhập (Nếu chưa Login)
 if not st.session_state.auth_status:
