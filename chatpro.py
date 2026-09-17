@@ -6,21 +6,21 @@ import sqlite3
 import datetime
 import uuid
 
-# 1. Cấu hình trang (phải đặt ngay sau import)
-st.set_page_config(page_title="Gemini Multi-User Pro", page_icon="🔒", layout="wide")
+# 1. Cấu hình trang
+st.set_page_config(page_title="Gemini Multi-User Pro", page_icon="⚡", layout="wide")
 
-# 2. Đọc secrets
+# 2. Kiểm tra Secrets
 try:
     API_KEYS = st.secrets["GEMINI_API_KEYS"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
     USER_PASSWORD = st.secrets.get("USER_PASSWORD", "123456")
 except KeyError:
-    st.error("⚠️ Thiếu cấu hình Secrets trên Streamlit Cloud (cần ADMIN_PASSWORD, USER_PASSWORD, GEMINI_API_KEYS).")
+    st.error("⚠️ Thiếu cấu hình Secrets (cần GEMINI_API_KEYS, ADMIN_PASSWORD, USER_PASSWORD).")
     st.stop()
 
-# 3. Khởi tạo SQLite database cục bộ
+# 3. Khởi tạo Database SQLite
 def init_db():
-    conn = sqlite3.connect("chats.db", check_same_thread=False)
+    conn = sqlite3.connect("chats.db", check_sound_thread=False if hasattr(sqlite3, 'check_sound_thread') else False, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -43,7 +43,7 @@ def init_db():
 
 conn = init_db()
 
-# 4. Khởi tạo session state
+# 4. Khởi tạo State
 if "auth_status" not in st.session_state:
     st.session_state.auth_status = False
 if "role" not in st.session_state:
@@ -63,18 +63,19 @@ def rotate_key_randomly():
     return True
 
 def get_masked_key(index):
-    return f"...{API_KEYS[index][-4:]}"
+    key_str = str(API_KEYS[index])
+    return f"...{key_str[-4:]}" if len(key_str) >= 4 else "Key"
 
-# Màn hình đăng nhập
+# 5. Màn hình Đăng nhập
 if not st.session_state.auth_status:
-    st.title("🔒 Đăng nhập hệ thống AI")
-    col1, col2 = st.columns(2)
+    st.title("🔒 Hệ thống AI Chat Multi-User")
+    col1, _ = st.columns([1, 1])
     with col1:
-        mode = st.radio("Chọn vai trò:", ["User thường", "Admin quản trị"])
+        mode = st.radio("Vai trò:", ["User thường", "Admin quản trị"])
         input_pass = st.text_input("Mật khẩu:", type="password")
-        input_name = st.text_input("Tên định danh của bạn (Username):", value="User_1")
+        input_name = st.text_input("Tên hiển thị (Username):", value="User_1")
         
-        if st.button("Đăng nhập"):
+        if st.button("Đăng nhập", type="primary"):
             if mode == "Admin quản trị" and input_pass == ADMIN_PASSWORD:
                 st.session_state.auth_status = True
                 st.session_state.role = "admin"
@@ -92,87 +93,50 @@ if not st.session_state.auth_status:
                 st.session_state.current_session_id = sess_id
                 st.rerun()
             else:
-                st.error("Sai mật khẩu hoặc thông tin đăng nhập!")
+                st.error("Sai mật khẩu!")
     st.stop()
 
-# Xử lý xoay vòng API gửi prompt (tự động dò model hỗ trợ thực tế của key)
+# 6. Hàm xử lý gọi API + Xoay Key an toàn
 def query_gemini_with_rotation(prompt_text, history_list):
-    success = False
     attempts = 0
     max_attempts = len(API_KEYS)
-    response_text = ""
-    final_model_name = "unknown"
+    # Danh sách các model ưu tiên thử nghiệm (từ Pro xịn đến Flash ổn định)
+    preferred_models = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-pro-latest', 'gemini-flash-latest']
 
-    while not success and attempts < max_attempts:
-        try:
-            current_key = API_KEYS[st.session_state.current_key_index]
-            genai.configure(api_key=current_key)
-            
-            # Quét danh sách model hợp lệ của key này
-            valid_models = []
+    while attempts < max_attempts:
+        current_key = API_KEYS[st.session_state.current_key_index]
+        genai.configure(api_key=current_key)
+        
+        for model_name in preferred_models:
             try:
-                for m in genai.list_models():
-                    if 'generateContent' in m.supported_generation_methods:
-                        valid_models.append(m.name.replace("models/", ""))
-            except Exception:
-                pass
-
-            # Ưu tiên chọn dòng Pro xịn nhất trong list của bạn
-            candidate_pro_models = [
-                'gemini-2.5-pro',
-                'gemini-pro-latest',
-                'gemini-2.5-flash'
-            ]
-
-            chosen_model = None
-            for m_name in candidate_pro_models:
-                if m_name in valid_models:
-                    chosen_model = m_name
-                    break
-
-            if not chosen_model and valid_models:
-                chosen_model = valid_models[0]
-            
-            final_model_name = chosen_model if chosen_model else 'gemini-2.5-flash'
-            
-            model = genai.GenerativeModel(final_model_name)
-            chat = model.start_chat(history=history_list)
-            res = chat.send_message(prompt_text)
-            response_text = res.text
-            success = True
-            
-        except ResourceExhausted:
-            attempts += 1
-            old_idx = st.session_state.current_key_index
-            if rotate_key_randomly():
-                st.toast(f"Key {old_idx+1} quá tải, đã đổi sang Key {st.session_state.current_key_index+1}", icon="🔄")
-            else:
+                model = genai.GenerativeModel(model_name)
+                if history_list:
+                    chat = model.start_chat(history=history_list)
+                    res = chat.send_message(prompt_text)
+                else:
+                    res = model.generate_content(prompt_text)
+                return res.text
+            except ResourceExhausted:
+                # Key bị hết quota -> Break vòng model để xoay sang Key mới
                 break
-        except Exception:
-            attempts += 1
-            old_idx = st.session_state.current_key_index
-            if rotate_key_randomly():
+            except Exception:
+                # Thử model tiếp theo trong danh sách nếu model này lỗi
                 continue
+        
+        # Nếu đã thử hết model mà key này vẫn lỗi / hết quota -> Đổi key
+        attempts += 1
+        old_idx = st.session_state.current_key_index
+        if rotate_key_randomly():
+            st.toast(f"Chuyển từ Key #{old_idx+1} sang Key #{st.session_state.current_key_index+1}", icon="🔄")
+        else:
             break
-    
-    if not success:
-        return f"Tất cả API keys đều lỗi hoặc không hỗ trợ generateContent. Model thử cuối: {final_model_name}"
-    return response_text
 
-# Sidebar quản trị / User menu
+    return "⚠️ Tất cả API Key đều hết quota hoặc không khởi tạo được model. Vui lòng kiểm tra lại Key trên AI Studio."
+
+# 7. Thanh Sidebar
 with st.sidebar:
-    st.write(f"👤 **{st.session_state.username}** ({st.session_state.role.upper()})")
+    st.markdown(f"### 👤 **{st.session_state.username}** (`{st.session_state.role.upper()}`)")
     
-    # 🔍 Thêm công cụ check model ngay trên sidebar an toàn
-    with st.expander("🔍 Debug Models Key hiện tại"):
-        if st.button("Kiểm tra danh sách model"):
-            try:
-                genai.configure(api_key=API_KEYS[st.session_state.current_key_index])
-                ms = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                st.write(ms)
-            except Exception as e:
-                st.error(f"Lỗi: {e}")
-
     if st.session_state.role == "user":
         new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
         if st.button("Lưu tên mới"):
@@ -181,23 +145,24 @@ with st.sidebar:
                 cursor = conn.cursor()
                 cursor.execute("UPDATE sessions SET username = ? WHERE id = ?", (st.session_state.username, st.session_state.current_session_id))
                 conn.commit()
-                st.success("Đã cập nhật tên mới!")
+                st.success("Đã cập nhật!")
                 st.rerun()
 
-        st.subheader("⚙️ Quản lý phiên của bạn")
+        st.divider()
+        st.subheader("⚙️ Quản lý phiên Chat")
         cursor = conn.cursor()
         cursor.execute("SELECT is_locked FROM sessions WHERE id = ?", (st.session_state.current_session_id,))
         row = cursor.fetchone()
         is_locked = row[0] if row else 0
         
         if is_locked == 0:
-            if st.button("🔒 Khóa cuộc trò chuyện này (Private)", type="primary"):
+            if st.button("🔒 Khóa riêng tư cuộc trò chuyện", type="primary"):
                 cursor.execute("UPDATE sessions SET is_locked = 1 WHERE id = ?", (st.session_state.current_session_id,))
                 conn.commit()
                 st.rerun()
         else:
-            st.warning("🔒 Cuộc trò chuyện này đang bị khóa.")
-            if st.button("🔓 Mở khóa trò chuyện"):
+            st.warning("🔒 Phiên chat này đang Khóa.")
+            if st.button("🔓 Mở khóa"):
                 cursor.execute("UPDATE sessions SET is_locked = 0 WHERE id = ?", (st.session_state.current_session_id,))
                 conn.commit()
                 st.rerun()
@@ -211,13 +176,13 @@ with st.sidebar:
             st.rerun()
 
     elif st.session_state.role == "admin":
-        st.subheader("🛡️ Admin Panel - Giám sát")
+        st.subheader("🛡️ Admin Monitoring")
         cursor = conn.cursor()
         cursor.execute("SELECT id, username, is_locked, created_at FROM sessions ORDER BY created_at DESC")
         all_sessions = cursor.fetchall()
         
         sess_options = {f"[{'LOCKED' if s[2] else 'OPEN'}] {s[1]} ({s[0]})": s[0] for s in all_sessions}
-        selected_label = st.selectbox("Chọn phiên chat của người dùng:", list(sess_options.keys()) if sess_options else ["Không có"])
+        selected_label = st.selectbox("Chọn phiên chat theo dõi:", list(sess_options.keys()) if sess_options else ["Không có"])
         
         if sess_options and selected_label:
             st.session_state.admin_selected_session = sess_options[selected_label]
@@ -237,30 +202,29 @@ with st.sidebar:
                     st.rerun()
 
     st.divider()
-    st.caption(f"Đang dùng Key #{st.session_state.current_key_index + 1} {get_masked_key(st.session_state.current_key_index)}")
-    if st.button("Đăng xuất / Khóa ứng dụng"):
+    st.caption(f"🔑 Đang dùng Key #{st.session_state.current_key_index + 1} ({get_masked_key(st.session_state.current_key_index)})")
+    if st.button("Đăng xuất"):
         st.session_state.auth_status = False
         st.rerun()
 
-# Giao diện chính hiển thị chat
+# 8. Màn hình Chat chính
 active_sid = st.session_state.current_session_id if st.session_state.role == "user" else st.session_state.get("admin_selected_session")
 
 if not active_sid:
-    st.info("Vui lòng chọn phiên chat hoặc tạo phiên mới.")
+    st.info("Vui lòng tạo hoặc chọn một phiên chat.")
     st.stop()
 
 cursor = conn.cursor()
 cursor.execute("SELECT username, is_locked FROM sessions WHERE id = ?", (active_sid,))
 sess_info = cursor.fetchone()
-owner_name = None
 
 if sess_info:
     owner_name, locked_state = sess_info
     if locked_state == 1 and st.session_state.role == "user" and st.session_state.username != owner_name:
-        st.error("🚫 Cuộc trò chuyện này đã bị người dùng khác khóa riêng tư!")
+        st.error("🚫 Cuộc trò chuyện này đã bị chủ sở hữu khóa riêng tư!")
         st.stop()
 
-st.title(f"🤖 Chat Pro (Phiên: {active_sid})")
+st.title(f"💬 Chat AI (Session: `{active_sid}`)")
 
 cursor.execute("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC", (active_sid,))
 db_messages = cursor.fetchall()
@@ -272,11 +236,11 @@ for role, content in db_messages:
     g_role = "user" if role == "user" else "model"
     gemini_history.append({"role": g_role, "parts": [content]})
 
-if prompt := st.chat_input("Nhập câu hỏi..."):
+if prompt := st.chat_input("Nhập tin nhắn..."):
     cursor.execute("SELECT is_locked FROM sessions WHERE id = ?", (active_sid,))
     row_lock = cursor.fetchone()
     if row_lock and row_lock[0] == 1 and st.session_state.role == "user" and st.session_state.username != owner_name:
-        st.error("Không thể gửi tin nhắn vào phiên đã khóa.")
+        st.error("Không thể nhắn tin vào phiên đã bị khóa.")
         st.stop()
 
     with st.chat_message("user"):
@@ -284,11 +248,10 @@ if prompt := st.chat_input("Nhập câu hỏi..."):
     
     cursor.execute("INSERT INTO messages (session_id, role, content) VALUES (?, 'user', ?)", (active_sid, prompt))
     conn.commit()
-    gemini_history.append({"role": "user", "parts": [prompt]})
 
     with st.chat_message("assistant"):
         with st.spinner("Đang suy luận..."):
-            reply = query_gemini_with_rotation(prompt, gemini_history[:-1])
+            reply = query_gemini_with_rotation(prompt, gemini_history)
             st.markdown(reply)
             
     cursor.execute("INSERT INTO messages (session_id, role, content) VALUES (?, 'assistant', ?)", (active_sid, reply))
