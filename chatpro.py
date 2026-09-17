@@ -95,7 +95,7 @@ if not st.session_state.auth_status:
                 st.error("Sai mật khẩu hoặc thông tin đăng nhập!")
     st.stop()
 
-# Xử lý xoay vòng API gửi prompt
+# Xử lý xoay vòng API gửi prompt (Đổi sang gemini-1.5-flash để fix lỗi 404)
 def query_gemini_with_rotation(prompt_text, history_list):
     success = False
     attempts = 0
@@ -106,7 +106,7 @@ def query_gemini_with_rotation(prompt_text, history_list):
         try:
             current_key = API_KEYS[st.session_state.current_key_index]
             genai.configure(api_key=current_key)
-            model = genai.GenerativeModel('gemini-1.5-pro')
+            model = genai.GenerativeModel('gemini-1.5-flash')
             chat = model.start_chat(history=history_list)
             res = chat.send_message(prompt_text)
             response_text = res.text
@@ -130,8 +130,18 @@ with st.sidebar:
     st.write(f"👤 **{st.session_state.username}** ({st.session_state.role.upper()})")
     
     if st.session_state.role == "user":
+        # Tính năng đổi tên user
+        new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
+        if st.button("Lưu tên mới"):
+            if new_username.strip():
+                st.session_state.username = new_username.strip()
+                cursor = conn.cursor()
+                cursor.execute("UPDATE sessions SET username = ? WHERE id = ?", (st.session_state.username, st.session_state.current_session_id))
+                conn.commit()
+                st.success("Đã cập nhật tên mới!")
+                st.rerun()
+
         st.subheader("⚙️ Quản lý phiên của bạn")
-        # Kiểm tra trạng thái khóa hiện tại
         cursor = conn.cursor()
         cursor.execute("SELECT is_locked FROM sessions WHERE id = ?", (st.session_state.current_session_id,))
         row = cursor.fetchone()
@@ -168,7 +178,6 @@ with st.sidebar:
         
         if sess_options and selected_label:
             st.session_state.admin_selected_session = sess_options[selected_label]
-            # Admin có thể ép khóa/mở khóa phiên bất kỳ
             c_id = st.session_state.admin_selected_session
             cursor.execute("SELECT is_locked FROM sessions WHERE id = ?", (c_id,))
             l_val = cursor.fetchone()[0]
@@ -194,7 +203,7 @@ with st.sidebar:
 active_sid = st.session_state.current_session_id if st.session_state.role == "user" else st.session_state.get("admin_selected_session")
 
 if not active_sid:
-    st.info("Vเลือก phiên chat hoặc tạo phiên mới.")
+    st.info("Vui lòng chọn phiên chat hoặc tạo phiên mới.")
     st.stop()
 
 # Kiểm tra quyền truy cập locked
@@ -223,7 +232,6 @@ for role, content in db_messages:
 
 # Xử lý input chat
 if prompt := st.chat_input("Nhập câu hỏi..."):
-    # Kiểm tra lại khóa trước khi gửi
     cursor.execute("SELECT is_locked FROM sessions WHERE id = ?", (active_sid,))
     if cursor.fetchone()[0] == 1 and st.session_state.role == "user" and st.session_state.username != owner_name:
         st.error("Không thể gửi tin nhắn vào phiên đã khóa.")
