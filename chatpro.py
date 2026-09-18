@@ -187,10 +187,10 @@ if "quota_cooldown" not in st.session_state:
 
 # 5. Hàm gọi API "Vét Ngang" Ưu tiên Model Cao Cấp
 def query_gemini(prompt_text, history_list, image_data=None):
-    # Đã cập nhật sang thế hệ model 2.5 theo đúng danh sách API hỗ trợ
+    # Cập nhật lên thế hệ 3.x theo đúng danh sách hỗ trợ và yêu cầu từ Google
     MODEL_TIERS = [
-        ["gemini-2.5-pro"],       # TIER 0: Ưu tiên dùng bản Pro
-        ["gemini-2.5-flash"]      # TIER 1: Hạ cấp xuống Flash nếu toàn bộ dàn Pro hết Quota
+        ["gemini-3.1-pro-preview"],       # TIER 0: Bản Pro 3.1 mạnh nhất bạn đang có
+        ["gemini-3.6-flash"]              # TIER 1: Bản Flash hạ cấp (Google trực tiếp gợi ý bản này)
     ]
 
     current_time = time.time()
@@ -227,7 +227,6 @@ def query_gemini(prompt_text, history_list, image_data=None):
                     return res.text, model_name
 
                 except ResourceExhausted:
-                    # Bị Google chặn vì hết Quota -> Phạt Key này 60 giây và nhảy sang Key khác
                     st.session_state.quota_cooldown[(key_idx, tier_idx)] = current_time + 60
                     st.session_state.key_status[key_idx] = f"🟡 Hết Quota {model_name}"
                     last_error = f"{model_name} hết quota (Lỗi 429)"
