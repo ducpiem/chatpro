@@ -97,7 +97,6 @@ def get_db_pool():
     return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
 
 def run_query(query, params=(), fetch=None):
-    """Thực thi SQL an toàn với Neon PostgreSQL."""
     pool_conn = get_db_pool()
     conn = pool_conn.getconn()
     try:
@@ -185,7 +184,7 @@ if "selected_persona" not in st.session_state:
 if "quota_cooldown" not in st.session_state:
     st.session_state.quota_cooldown = {}
 
-# 5. Hàm gọi API "Vét Ngang" Ưu tiên Model Cao Cấp
+# 5. Hàm gọi API "Vét Ngang" Ưu tiên Model Cao Cấp (Có Cửa Sổ Trượt)
 def query_gemini(prompt_text, history_list, image_data=None):
     MODEL_TIERS = [
         ["gemini-3.1-pro-preview"],                         # TIER 0: Pro
@@ -197,6 +196,9 @@ def query_gemini(prompt_text, history_list, image_data=None):
     last_error = ""
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
     all_keys_cooldown = True 
+    
+    # [TỐI ƯU]: SLIDING WINDOW - Cắt 6 tin nhắn gần nhất (3 lượt hỏi đáp)
+    trimmed_history = history_list[-6:] if history_list else []
 
     for tier_idx, tier_models in enumerate(MODEL_TIERS):
         start_key = st.session_state.current_key_index
@@ -215,8 +217,8 @@ def query_gemini(prompt_text, history_list, image_data=None):
                     
                     if image_data:
                         res = model.generate_content([image_data, prompt_text])
-                    elif history_list:
-                        chat = model.start_chat(history=history_list)
+                    elif trimmed_history:
+                        chat = model.start_chat(history=trimmed_history)
                         res = chat.send_message(prompt_text)
                     else:
                         res = model.generate_content(prompt_text)
@@ -426,9 +428,11 @@ if not db_messages and st.session_state.role == "user":
 gemini_history = []
 for role, content in db_messages:
     with st.chat_message(role):
-        st.markdown(content)
+        st.markdown(content, unsafe_allow_html=True)
     g_role = "user" if role == "user" else "model"
-    gemini_history.append({"role": g_role, "parts": [content]})
+    # Dọn dẹp thẻ HTML badge khỏi history nạp vào model để tránh tốn token vô ích
+    clean_content = content.split("<div style='text-align: right")[0].strip()
+    gemini_history.append({"role": g_role, "parts": [clean_content]})
 
 # Bộ chọn/dán ảnh
 col_up, col_paste = st.columns([0.6, 0.4])
@@ -455,7 +459,50 @@ if img_data:
             st.session_state.img_reset_key += 1
             st.rerun()
 
-# Ô nhập nội dung
+
+# ==========================================
+# 💎 UI BADGE "NATIVE GEMINI" HIỂN THỊ TRƯỚC
+# ==========================================
+# Lấy tên model đang sẵn sàng để gán nhãn
+active_status = st.session_state.key_status.get(st.session_state.current_key_index, "")
+if "Pro" in active_status:
+    badge_label = "Pro 3.1"
+elif "Flash" in active_status:
+    badge_label = "Flash 3.6"
+else:
+    badge_label = "Flash-Lite"
+
+st.markdown(f"""
+<style>
+.gemini-badge {{
+    position: fixed;
+    bottom: 92px;
+    right: max(20px, calc(50% - 430px));
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #444746;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    pointer-events: none;
+}}
+@media (max-width: 768px) {{
+    .gemini-badge {{ right: 15px; bottom: 82px; }}
+}}
+</style>
+<div class="gemini-badge">✨ {badge_label} ⌄</div>
+""", unsafe_allow_html=True)
+
+
+# ==========================================
+# LUỒNG XỬ LÝ CHAT
+# ==========================================
 if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
     with st.chat_message("user"):
         if img_data:
@@ -467,10 +514,12 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Đang suy luận..."):
-            reply = query_gemini(prompt, gemini_history, image_data=img_data)
+            reply, used_model = query_gemini(prompt, gemini_history, image_data=img_data)
             st.markdown(reply)
 
-    run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply))
+    # Đính kèm chữ chìm vào history DB để bạn kiểm tra lại sau này
+    reply_to_db = reply if used_model == "Error" else reply + f"\n\n<div style='text-align: right; font-size: 11px; color: #888; font-style: italic;'>(Trả lời bằng: {used_model})</div>"
+    run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply_to_db))
 
     if img_data:
         st.session_state.img_reset_key += 1
