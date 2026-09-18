@@ -1,10 +1,12 @@
 import datetime
 import random
 import uuid
+import time
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 from PIL import Image
 import psycopg2
+from psycopg2 import pool
 import streamlit as st
 from streamlit_paste_button import paste_image_button
 
@@ -89,26 +91,15 @@ PERSONAS = {
     "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu.",
 }
 
-# Khôi phục danh sách model chuẩn cũ của bạn
-# Sửa lại thứ tự ưu tiên
-PREFERRED_MODELS = [
-    "gemini-1.5-flash", # Ưu tiên Flash vì quota lớn (15 RPM), phản hồi siêu nhanh
-    "gemini-1.5-pro",   # Pro để backup vì quota rất thấp (2 RPM)
-]
-
-import psycopg2.pool
-
-# 3. Quản lý Kết nối Database Neon (Tối ưu Tốc Độ - Chống Lag)
-
-# Dùng cache của Streamlit để giữ kết nối luôn sống, không bị mở/đóng liên tục
+# 3. Quản lý Kết nối Database Neon (Tối ưu Tốc Độ với Connection Pool)
 @st.cache_resource
 def get_db_pool():
     return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
 
 def run_query(query, params=(), fetch=None):
-    """Thực thi SQL với Connection Pool siêu tốc."""
-    pool = get_db_pool()
-    conn = pool.getconn() # Lấy 1 kết nối có sẵn ra dùng
+    """Thực thi SQL an toàn với Neon PostgreSQL."""
+    pool_conn = get_db_pool()
+    conn = pool_conn.getconn()
     try:
         with conn.cursor() as cur:
             cur.execute(query, params)
@@ -123,7 +114,7 @@ def run_query(query, params=(), fetch=None):
         st.error(f"Lỗi Database: {e}")
         return None
     finally:
-        pool.putconn(conn) # Dùng xong trả lại vào hồ (không đóng)
+        pool_conn.putconn(conn)
 
 @st.cache_resource
 def init_db():
@@ -146,7 +137,7 @@ def init_db():
         )
     """)
 
-init_db() # Giờ nó chỉ chạy đúng 1 lần khi khởi động app
+init_db()
 
 # Các hàm thao tác Database
 def delete_session(session_id):
@@ -188,82 +179,69 @@ if "current_session_id" not in st.session_state:
 if "current_key_index" not in st.session_state:
     st.session_state.current_key_index = random.randint(0, len(API_KEYS) - 1)
 if "key_status" not in st.session_state:
-    st.session_state.key_status = {i: "🟢 Ổn định" for i in range(len(API_KEYS))}
+    st.session_state.key_status = {i: "🟢 Sẵn sàng" for i in range(len(API_KEYS))}
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = list(PERSONAS.keys())[0]
+if "quota_cooldown" not in st.session_state:
+    st.session_state.quota_cooldown = {}
 
-def rotate_key(reason="Lỗi"):
-    idx = st.session_state.current_key_index
-    st.session_state.key_status[idx] = f"🔴 {reason}"
-    available = [i for i in range(len(API_KEYS)) if "🔴" not in st.session_state.key_status[i]]
-    if available:
-        st.session_state.current_key_index = random.choice(available)
-        st.session_state.key_status[st.session_state.current_key_index] = "🟡 Đang sử dụng"
-        return True
-    else:
-        st.session_state.current_key_index = (idx + 1) % len(API_KEYS)
-        return False
-
-# 5. Hàm gọi API Gemini (Giữ nguyên logic chuẩn ban đầu của bạn)
+# 5. Hàm gọi API "Vét Ngang" Ưu tiên Model Cao Cấp
 def query_gemini(prompt_text, history_list, image_data=None):
-    attempts = 0
-    max_attempts = len(API_KEYS)
+    MODEL_TIERS = [
+        ["gemini-1.5-pro", "gemini-1.0-pro"],  # TIER 0: Chế độ Pro (Suy luận nâng cao)
+        ["gemini-1.5-flash"],                  # TIER 1: Chế độ Flash (Toàn diện)
+        ["gemini-1.5-flash-8b"]                # TIER 2: Chế độ Lite (Nhanh nhất)
+    ]
+
+    current_time = time.time()
     last_error = ""
+    system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
 
-    while attempts < max_attempts:
-        current_key = API_KEYS[st.session_state.current_key_index]
-        genai.configure(api_key=current_key)
-        system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
+    for tier_idx, tier_models in enumerate(MODEL_TIERS):
+        start_key = st.session_state.current_key_index
+        for offset in range(len(API_KEYS)):
+            key_idx = (start_key + offset) % len(API_KEYS)
+            
+            # Kiểm tra thời gian hồi chiêu
+            cooldown_until = st.session_state.quota_cooldown.get((key_idx, tier_idx), 0)
+            if current_time < cooldown_until:
+                continue 
 
-        try:
-            available_models = [
-                m.name.replace("models/", "")
-                for m in genai.list_models()
-                if "generateContent" in m.supported_generation_methods
-            ]
-        except Exception:
-            available_models = []
+            current_key = API_KEYS[key_idx]
+            genai.configure(api_key=current_key)
 
-        models_to_try = []
-        for target in PREFERRED_MODELS:
-            matched = [am for am in available_models if target in am]
-            if matched:
-                models_to_try.extend(matched)
-            else:
-                models_to_try.append(target)
+            for model_name in tier_models:
+                try:
+                    model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
+                    contents = []
+                    if image_data:
+                        contents.append(image_data)
+                    contents.append(prompt_text)
 
-        for am in available_models:
-            if am not in models_to_try:
-                models_to_try.append(am)
+                    if history_list and not image_data:
+                        chat = model.start_chat(history=history_list)
+                        res = chat.send_message(prompt_text)
+                    else:
+                        res = model.generate_content(contents)
 
-        for model_name in models_to_try:
-            try:
-                model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
-                contents = []
-                if image_data:
-                    contents.append(image_data)
-                contents.append(prompt_text)
+                    # Lưu trạng thái thành công
+                    st.session_state.current_key_index = key_idx
+                    tier_label = ["Pro", "Flash", "Lite"][tier_idx]
+                    st.session_state.key_status[key_idx] = f"🟢 Đang dùng ({tier_label})"
+                    return res.text
 
-                if history_list and not image_data:
-                    chat = model.start_chat(history=history_list)
-                    res = chat.send_message(prompt_text)
-                else:
-                    res = model.generate_content(contents)
+                except ResourceExhausted:
+                    # Bị lỗi 429: Phạt Key ở cấp độ này nghỉ 60s
+                    st.session_state.quota_cooldown[(key_idx, tier_idx)] = current_time + 60
+                    st.session_state.key_status[key_idx] = f"🟡 Chờ hồi Quota {model_name[:8]}"
+                    last_error = f"{model_name} hết quota"
+                    break 
+                    
+                except Exception as e:
+                    last_error = str(e)
+                    continue
 
-                st.session_state.key_status[st.session_state.current_key_index] = f"🟢 Ổn định ({model_name})"
-                return res.text
-
-            except ResourceExhausted:
-                last_error = "Key hết Quota (Lỗi 429)"
-                continue
-            except Exception as e:
-                last_error = f"{model_name}: {str(e)}"
-                continue
-
-        rotate_key("Hết Quota / Lỗi")
-        attempts += 1
-
-    return f"⚠️ **Không thể kết nối API.** Lỗi gần nhất: `{last_error}`"
+    return f"⚠️ **Toàn bộ hệ thống đều đang quá tải.** \n\nLỗi gần nhất: `{last_error}`. \nVui lòng đợi khoảng 1 phút rồi thử lại."
 
 # 6. Màn hình Đăng nhập
 if not st.session_state.auth_status:
