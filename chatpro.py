@@ -5,24 +5,25 @@ import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 from PIL import Image
 import psycopg2
-from psycopg2 import pool
 import streamlit as st
 from streamlit_paste_button import paste_image_button
 
-# 1. Cấu hình trang & CSS (Tối ưu giao diện điện thoại & ẩn hiệu ứng mờ nếu có)
+# 1. Cấu hình trang & CSS (Tối ưu cho cả PC & Điện thoại)
 st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide")
 
 st.markdown(
     """
 <style>
+    /* Thanh cuộn nhỏ gọn */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #f1f1f1; }
     ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
 
+    /* Tối ưu khoảng cách khung chat */
     .block-container { padding-top: 1rem; padding-bottom: 4rem; max-width: 900px; }
     .stChatInputContainer { padding-bottom: 10px; }
 
-    /* Nút Lên/Xuống nhỏ gọn ở giữa lề phải */
+    /* Nút Lên/Xuống: Nhỏ gọn, nằm ở giữa lề phải */
     .scroll-btn-container {
         position: fixed;
         top: 50%;
@@ -34,7 +35,7 @@ st.markdown(
         gap: 6px;
     }
     .scroll-btn {
-        background-color: rgba(66, 133, 244, 0.85);
+        background-color: rgba(66, 133, 244, 0.8);
         color: white;
         border: none;
         border-radius: 50%;
@@ -53,6 +54,7 @@ st.markdown(
         transform: scale(1.1);
     }
 
+    /* Tối ưu riêng cho Màn hình Điện thoại */
     @media (max-width: 768px) {
         .block-container { padding-left: 0.5rem; padding-right: 0.5rem; padding-top: 0.5rem; }
         .scroll-btn-container { right: 4px; }
@@ -60,6 +62,7 @@ st.markdown(
     }
 </style>
 
+<!-- Script xử lý cuộn trang mượt mà -->
 <div class="scroll-btn-container">
     <button class="scroll-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'});" title="Lên đầu trang">⬆️</button>
     <button class="scroll-btn" onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});" title="Xuống cuối trang">⬇️</button>
@@ -75,9 +78,10 @@ try:
     USER_PASSWORD = st.secrets.get("USER_PASSWORD", "123456")
     NEON_DB_URL = st.secrets["NEON_DATABASE_URL"]
 except KeyError:
-    st.error("⚠️ Thiếu cấu hình Secrets.")
+    st.error("⚠️ Thiếu cấu hình Secrets (Cần GEMINI_API_KEYS, ADMIN_PASSWORD, USER_PASSWORD, NEON_DATABASE_URL).")
     st.stop()
 
+# Danh sách Vai trò AI
 PERSONAS = {
     "✨ Trợ lý Mặc định": "Bạn là một trợ lý AI thông minh, thân thiện và hữu ích.",
     "💻 Lập trình viên Senior": "Bạn là một chuyên gia lập trình Senior. Trả lời tập trung vào mã nguồn tối ưu, ngắn gọn, có giải thích rõ ràng.",
@@ -85,21 +89,26 @@ PERSONAS = {
     "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu.",
 }
 
-# Ưu tiên bản Pro lên đầu tiên theo ý bạn (thêm cả các bản flash dự phòng)
+# Khôi phục danh sách model chuẩn cũ của bạn
+# Sửa lại thứ tự ưu tiên
 PREFERRED_MODELS = [
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-    "gemini-pro",
+    "gemini-1.5-flash", # Ưu tiên Flash vì quota lớn (15 RPM), phản hồi siêu nhanh
+    "gemini-1.5-pro",   # Pro để backup vì quota rất thấp (2 RPM)
 ]
 
-# 3. Quản lý Kết nối Database qua Connection Pool (Giúp siêu tốc, không bị delay)
+import psycopg2.pool
+
+# 3. Quản lý Kết nối Database Neon (Tối ưu Tốc Độ - Chống Lag)
+
+# Dùng cache của Streamlit để giữ kết nối luôn sống, không bị mở/đóng liên tục
 @st.cache_resource
 def get_db_pool():
-    return pool.SimpleConnectionPool(1, 10, dsn=NEON_DB_URL)
+    return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
 
 def run_query(query, params=(), fetch=None):
-    db_pool = get_db_pool()
-    conn = db_pool.getconn()
+    """Thực thi SQL với Connection Pool siêu tốc."""
+    pool = get_db_pool()
+    conn = pool.getconn() # Lấy 1 kết nối có sẵn ra dùng
     try:
         with conn.cursor() as cur:
             cur.execute(query, params)
@@ -111,12 +120,12 @@ def run_query(query, params=(), fetch=None):
         conn.commit()
         return res
     except Exception as e:
-        conn.rollback()
-        st.error(f"Lỗi DB: {e}")
+        st.error(f"Lỗi Database: {e}")
         return None
     finally:
-        db_pool.putconn(conn)
+        pool.putconn(conn) # Dùng xong trả lại vào hồ (không đóng)
 
+@st.cache_resource
 def init_db():
     run_query("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -137,8 +146,9 @@ def init_db():
         )
     """)
 
-init_db()
+init_db() # Giờ nó chỉ chạy đúng 1 lần khi khởi động app
 
+# Các hàm thao tác Database
 def delete_session(session_id):
     run_query("DELETE FROM messages WHERE session_id = %s", (session_id,))
     run_query("DELETE FROM sessions WHERE id = %s", (session_id,))
@@ -194,7 +204,7 @@ def rotate_key(reason="Lỗi"):
         st.session_state.current_key_index = (idx + 1) % len(API_KEYS)
         return False
 
-# 5. Hàm gọi API Gemini (Tốc độ cao, không quét mạng lấy model thừa thãi)
+# 5. Hàm gọi API Gemini (Giữ nguyên logic chuẩn ban đầu của bạn)
 def query_gemini(prompt_text, history_list, image_data=None):
     attempts = 0
     max_attempts = len(API_KEYS)
@@ -205,7 +215,28 @@ def query_gemini(prompt_text, history_list, image_data=None):
         genai.configure(api_key=current_key)
         system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
 
-        for model_name in PREFERRED_MODELS:
+        try:
+            available_models = [
+                m.name.replace("models/", "")
+                for m in genai.list_models()
+                if "generateContent" in m.supported_generation_methods
+            ]
+        except Exception:
+            available_models = []
+
+        models_to_try = []
+        for target in PREFERRED_MODELS:
+            matched = [am for am in available_models if target in am]
+            if matched:
+                models_to_try.extend(matched)
+            else:
+                models_to_try.append(target)
+
+        for am in available_models:
+            if am not in models_to_try:
+                models_to_try.append(am)
+
+        for model_name in models_to_try:
             try:
                 model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
                 contents = []
@@ -224,7 +255,7 @@ def query_gemini(prompt_text, history_list, image_data=None):
 
             except ResourceExhausted:
                 last_error = "Key hết Quota (Lỗi 429)"
-                break
+                continue
             except Exception as e:
                 last_error = f"{model_name}: {str(e)}"
                 continue
@@ -236,7 +267,7 @@ def query_gemini(prompt_text, history_list, image_data=None):
 
 # 6. Màn hình Đăng nhập
 if not st.session_state.auth_status:
-    _, col_box, _ = st.columns([1, 2, 1])
+    col_space1, col_box, col_space2 = st.columns([1, 2, 1])
     with col_box:
         st.write("<br><br>", unsafe_allow_html=True)
         st.markdown("<h2 style='text-align: center;'>✨ Đăng nhập Hệ thống AI</h2>", unsafe_allow_html=True)
@@ -272,12 +303,13 @@ if not st.session_state.auth_status:
                 st.error("Mật khẩu không chính xác.")
     st.stop()
 
+# Khôi phục session ID
 if st.session_state.role == "user" and not st.session_state.current_session_id:
     last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
     if last_sess:
         st.session_state.current_session_id = last_sess[0]
 
-# 7. Sidebar
+# 7. Giao diện Sidebar
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
     st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI (Persona):", list(PERSONAS.keys()))
@@ -352,8 +384,11 @@ with st.sidebar:
                     st.success(f"Đã xóa thành công User {selected_user_to_del}!")
                     st.session_state.admin_selected_session = None
                     st.rerun()
+        else:
+            st.caption("Chưa có User nào trong hệ thống.")
 
     st.divider()
+
     if st.session_state.role == "user":
         with st.expander(f"👤 Tài khoản: {st.session_state.username}", expanded=False):
             new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
@@ -411,6 +446,7 @@ if not db_messages and st.session_state.role == "user":
         run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, quick_prompt))
         st.rerun()
 
+# Render lịch sử tin nhắn
 gemini_history = []
 for role, content in db_messages:
     with st.chat_message(role):
@@ -418,6 +454,7 @@ for role, content in db_messages:
     g_role = "user" if role == "user" else "model"
     gemini_history.append({"role": g_role, "parts": [content]})
 
+# Bộ chọn/dán ảnh
 col_up, col_paste = st.columns([0.6, 0.4])
 reset_k = st.session_state.img_reset_key
 
@@ -442,6 +479,7 @@ if img_data:
             st.session_state.img_reset_key += 1
             st.rerun()
 
+# Ô nhập nội dung
 if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
     with st.chat_message("user"):
         if img_data:
