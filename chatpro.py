@@ -13,6 +13,7 @@ from streamlit_paste_button import paste_image_button
 # 1. Cấu hình trang & CSS (Tối ưu cho cả PC & Điện thoại)
 st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide")
 
+# ĐÃ XÓA MŨI TÊN CUỘN VÀ THÊM CSS GIAO DIỆN CHAT GIỐNG GEMINI
 st.markdown(
     """
 <style>
@@ -25,50 +26,20 @@ st.markdown(
     .block-container { padding-top: 1rem; padding-bottom: 4rem; max-width: 900px; }
     .stChatInputContainer { padding-bottom: 10px; }
 
-    /* Nút Lên/Xuống: Nhỏ gọn, nằm ở giữa lề phải */
-    .scroll-btn-container {
-        position: fixed;
-        top: 50%;
-        right: 8px;
-        transform: translateY(-50%);
-        z-index: 99999;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
+    /* Tùy chỉnh bong bóng chat giống Gemini */
+    [data-testid="stChatMessage"] {
+        padding: 1rem;
+        border-radius: 0.5rem;
     }
-    .scroll-btn {
-        background-color: rgba(66, 133, 244, 0.8);
-        color: white;
-        border: none;
-        border-radius: 50%;
-        width: 32px;
-        height: 32px;
-        font-size: 14px;
-        cursor: pointer;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: 0.2s;
-    }
-    .scroll-btn:hover {
-        background-color: #3367D6;
-        transform: scale(1.1);
+    /* Đổi màu nền tin nhắn của User sang xám nhạt giống Gemini */
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+        background-color: #f0f4f9; 
     }
 
-    /* Tối ưu riêng cho Màn hình Điện thoại */
     @media (max-width: 768px) {
         .block-container { padding-left: 0.5rem; padding-right: 0.5rem; padding-top: 0.5rem; }
-        .scroll-btn-container { right: 4px; }
-        .scroll-btn { width: 28px; height: 28px; font-size: 12px; }
     }
 </style>
-
-<!-- Script xử lý cuộn trang mượt mà -->
-<div class="scroll-btn-container">
-    <button class="scroll-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'});" title="Lên đầu trang">⬆️</button>
-    <button class="scroll-btn" onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});" title="Xuống cuối trang">⬇️</button>
-</div>
 """,
     unsafe_allow_html=True,
 )
@@ -91,13 +62,12 @@ PERSONAS = {
     "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu.",
 }
 
-# 3. Quản lý Kết nối Database Neon (Tối ưu Tốc Độ với Connection Pool)
+# 3. Quản lý Kết nối Database Neon
 @st.cache_resource
 def get_db_pool():
     return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
 
 def run_query(query, params=(), fetch=None):
-    """Thực thi SQL an toàn với Neon PostgreSQL."""
     pool_conn = get_db_pool()
     conn = pool_conn.getconn()
     try:
@@ -185,12 +155,12 @@ if "selected_persona" not in st.session_state:
 if "quota_cooldown" not in st.session_state:
     st.session_state.quota_cooldown = {}
 
-# 5. Hàm gọi API "Vét Ngang" Ưu tiên Model Cao Cấp
+# 5. Hàm gọi API "Vét Ngang" TRẢ VỀ THÊM TÊN MODEL
 def query_gemini(prompt_text, history_list, image_data=None):
     MODEL_TIERS = [
-        ["gemini-1.5-pro", "gemini-1.0-pro"],  # TIER 0: Chế độ Pro (Suy luận nâng cao)
-        ["gemini-1.5-flash"],                  # TIER 1: Chế độ Flash (Toàn diện)
-        ["gemini-1.5-flash-8b"]                # TIER 2: Chế độ Lite (Nhanh nhất)
+        ["gemini-1.5-pro", "gemini-1.0-pro"],  # TIER 0: Pro
+        ["gemini-1.5-flash"],                  # TIER 1: Flash
+        ["gemini-1.5-flash-8b"]                # TIER 2: Lite
     ]
 
     current_time = time.time()
@@ -202,7 +172,6 @@ def query_gemini(prompt_text, history_list, image_data=None):
         for offset in range(len(API_KEYS)):
             key_idx = (start_key + offset) % len(API_KEYS)
             
-            # Kiểm tra thời gian hồi chiêu
             cooldown_until = st.session_state.quota_cooldown.get((key_idx, tier_idx), 0)
             if current_time < cooldown_until:
                 continue 
@@ -224,14 +193,14 @@ def query_gemini(prompt_text, history_list, image_data=None):
                     else:
                         res = model.generate_content(contents)
 
-                    # Lưu trạng thái thành công
                     st.session_state.current_key_index = key_idx
                     tier_label = ["Pro", "Flash", "Lite"][tier_idx]
                     st.session_state.key_status[key_idx] = f"🟢 Đang dùng ({tier_label})"
-                    return res.text
+                    
+                    # TRẢ VỀ NỘI DUNG VÀ TÊN MODEL ĐÃ DÙNG
+                    return res.text, model_name
 
                 except ResourceExhausted:
-                    # Bị lỗi 429: Phạt Key ở cấp độ này nghỉ 60s
                     st.session_state.quota_cooldown[(key_idx, tier_idx)] = current_time + 60
                     st.session_state.key_status[key_idx] = f"🟡 Chờ hồi Quota {model_name[:8]}"
                     last_error = f"{model_name} hết quota"
@@ -241,7 +210,7 @@ def query_gemini(prompt_text, history_list, image_data=None):
                     last_error = str(e)
                     continue
 
-    return f"⚠️ **Toàn bộ hệ thống đều đang quá tải.** \n\nLỗi gần nhất: `{last_error}`. \nVui lòng đợi khoảng 1 phút rồi thử lại."
+    return f"⚠️ **Toàn bộ hệ thống đều đang quá tải.** \n\nLỗi gần nhất: `{last_error}`. \nVui lòng đợi khoảng 1 phút rồi thử lại.", "Lỗi"
 
 # 6. Màn hình Đăng nhập
 if not st.session_state.auth_status:
@@ -424,10 +393,11 @@ if not db_messages and st.session_state.role == "user":
         run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, quick_prompt))
         st.rerun()
 
-# Render lịch sử tin nhắn
+# THÊM AVATAR VÀO LỊCH SỬ CHAT
 gemini_history = []
 for role, content in db_messages:
-    with st.chat_message(role):
+    avatar_icon = "👤" if role == "user" else "✨"
+    with st.chat_message(role, avatar=avatar_icon):
         st.markdown(content)
     g_role = "user" if role == "user" else "model"
     gemini_history.append({"role": g_role, "parts": [content]})
@@ -457,9 +427,9 @@ if img_data:
             st.session_state.img_reset_key += 1
             st.rerun()
 
-# Ô nhập nội dung
+# Ô nhập nội dung & XỬ LÝ HIỂN THỊ TÊN MODEL
 if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="👤"):
         if img_data:
             st.image(img_data, width=200)
         st.markdown(prompt)
@@ -467,9 +437,14 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
     user_msg_store = prompt if not img_data else f"[Đã gửi 1 hình ảnh] {prompt}"
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, user_msg_store))
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="✨"):
         with st.spinner("Đang suy luận..."):
-            reply = query_gemini(prompt, gemini_history, image_data=img_data)
+            reply, used_model = query_gemini(prompt, gemini_history, image_data=img_data)
+            
+            # HIỂN THỊ TÊN MODEL ĐANG ĐƯỢC DÙNG (CHỨNG MINH ĐANG CHẠY BẢN PRO)
+            if used_model != "Lỗi":
+                st.caption(f"⚡ Trả lời bằng: **{used_model}**")
+                
             st.markdown(reply)
 
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply))
