@@ -90,17 +90,26 @@ PERSONAS = {
 }
 
 # Khôi phục danh sách model chuẩn cũ của bạn
+# Sửa lại thứ tự ưu tiên
 PREFERRED_MODELS = [
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-    "gemini-1.0-pro",
+    "gemini-1.5-flash", # Ưu tiên Flash vì quota lớn (15 RPM), phản hồi siêu nhanh
+    "gemini-1.5-pro",   # Pro để backup vì quota rất thấp (2 RPM)
 ]
 
-# 3. Quản lý Kết nối Database Neon (Tối ưu đóng/mở nhanh)
+import psycopg2.pool
+
+# 3. Quản lý Kết nối Database Neon (Tối ưu Tốc Độ - Chống Lag)
+
+# Dùng cache của Streamlit để giữ kết nối luôn sống, không bị mở/đóng liên tục
+@st.cache_resource
+def get_db_pool():
+    return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
+
 def run_query(query, params=(), fetch=None):
-    """Thực thi SQL an toàn với Neon PostgreSQL."""
+    """Thực thi SQL với Connection Pool siêu tốc."""
+    pool = get_db_pool()
+    conn = pool.getconn() # Lấy 1 kết nối có sẵn ra dùng
     try:
-        conn = psycopg2.connect(NEON_DB_URL)
         with conn.cursor() as cur:
             cur.execute(query, params)
             res = None
@@ -109,12 +118,14 @@ def run_query(query, params=(), fetch=None):
             elif fetch == "all":
                 res = cur.fetchall()
         conn.commit()
-        conn.close()
         return res
     except Exception as e:
         st.error(f"Lỗi Database: {e}")
         return None
+    finally:
+        pool.putconn(conn) # Dùng xong trả lại vào hồ (không đóng)
 
+@st.cache_resource
 def init_db():
     run_query("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -135,7 +146,7 @@ def init_db():
         )
     """)
 
-init_db()
+init_db() # Giờ nó chỉ chạy đúng 1 lần khi khởi động app
 
 # Các hàm thao tác Database
 def delete_session(session_id):
@@ -244,7 +255,7 @@ def query_gemini(prompt_text, history_list, image_data=None):
 
             except ResourceExhausted:
                 last_error = "Key hết Quota (Lỗi 429)"
-                break
+                continue
             except Exception as e:
                 last_error = f"{model_name}: {str(e)}"
                 continue
