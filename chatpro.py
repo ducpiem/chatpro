@@ -187,10 +187,10 @@ if "quota_cooldown" not in st.session_state:
 
 # 5. Hàm gọi API "Vét Ngang" Ưu tiên Model Cao Cấp
 def query_gemini(prompt_text, history_list, image_data=None):
-    # Cập nhật lên thế hệ 3.x theo đúng danh sách hỗ trợ và yêu cầu từ Google
     MODEL_TIERS = [
-        ["gemini-3.1-pro-preview"],       # TIER 0: Bản Pro 3.1 mạnh nhất bạn đang có
-        ["gemini-3.6-flash"]              # TIER 1: Bản Flash hạ cấp (Google trực tiếp gợi ý bản này)
+        ["gemini-3.1-pro-preview"],                         # TIER 0: Pro
+        ["gemini-3.6-flash"],                               # TIER 1: Flash
+        ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]  # TIER 2: Lite (vét cuối)
     ]
 
     current_time = time.time()
@@ -222,7 +222,8 @@ def query_gemini(prompt_text, history_list, image_data=None):
                         res = model.generate_content(prompt_text)
 
                     st.session_state.current_key_index = key_idx
-                    tier_label = ["Pro", "Flash"][tier_idx]
+                    tier_labels = ["Pro", "Flash", "Lite"]
+                    tier_label = tier_labels[tier_idx] if tier_idx < len(tier_labels) else "Lite"
                     st.session_state.key_status[key_idx] = f"🟢 Đang dùng ({tier_label})"
                     return res.text, model_name
 
