@@ -467,9 +467,8 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Đang suy luận..."):
-            reply, used_model = query_gemini(prompt, gemini_history, image_data=img_data)
-st.markdown(reply)
-st.caption(f"ℹ️ Đã phản hồi bằng model: `{used_model}`")
+            reply = query_gemini(prompt, gemini_history, image_data=img_data)
+            st.markdown(reply)
 
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply))
 
