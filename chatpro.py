@@ -187,61 +187,59 @@ if "quota_cooldown" not in st.session_state:
 
 # 5. Hàm gọi API "Vét Ngang" Ưu tiên Model Cao Cấp
 def query_gemini(prompt_text, history_list, image_data=None):
+    # Đã cập nhật sang thế hệ model 2.5 theo đúng danh sách API hỗ trợ
     MODEL_TIERS = [
-        ["gemini-1.5-pro", "gemini-1.0-pro"],  # TIER 0: Chế độ Pro (Suy luận nâng cao)
-        ["gemini-1.5-flash"],                  # TIER 1: Chế độ Flash (Toàn diện)
-        ["gemini-1.5-flash-8b"]                # TIER 2: Chế độ Lite (Nhanh nhất)
+        ["gemini-2.5-pro"],       # TIER 0: Ưu tiên dùng bản Pro
+        ["gemini-2.5-flash"]      # TIER 1: Hạ cấp xuống Flash nếu toàn bộ dàn Pro hết Quota
     ]
 
     current_time = time.time()
     last_error = ""
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
+    all_keys_cooldown = True 
 
     for tier_idx, tier_models in enumerate(MODEL_TIERS):
         start_key = st.session_state.current_key_index
         for offset in range(len(API_KEYS)):
             key_idx = (start_key + offset) % len(API_KEYS)
             
-            # Kiểm tra thời gian hồi chiêu
-            cooldown_until = st.session_state.quota_cooldown.get((key_idx, tier_idx), 0)
-            if current_time < cooldown_until:
+            if current_time < st.session_state.quota_cooldown.get((key_idx, tier_idx), 0):
                 continue 
-
-            current_key = API_KEYS[key_idx]
-            genai.configure(api_key=current_key)
+            
+            all_keys_cooldown = False 
+            genai.configure(api_key=API_KEYS[key_idx])
 
             for model_name in tier_models:
                 try:
                     model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
-                    contents = []
+                    
                     if image_data:
-                        contents.append(image_data)
-                    contents.append(prompt_text)
-
-                    if history_list and not image_data:
+                        res = model.generate_content([image_data, prompt_text])
+                    elif history_list:
                         chat = model.start_chat(history=history_list)
                         res = chat.send_message(prompt_text)
                     else:
-                        res = model.generate_content(contents)
+                        res = model.generate_content(prompt_text)
 
-                    # Lưu trạng thái thành công
                     st.session_state.current_key_index = key_idx
-                    tier_label = ["Pro", "Flash", "Lite"][tier_idx]
+                    tier_label = ["Pro", "Flash"][tier_idx]
                     st.session_state.key_status[key_idx] = f"🟢 Đang dùng ({tier_label})"
-                    return res.text
+                    return res.text, model_name
 
                 except ResourceExhausted:
-                    # Bị lỗi 429: Phạt Key ở cấp độ này nghỉ 60s
+                    # Bị Google chặn vì hết Quota -> Phạt Key này 60 giây và nhảy sang Key khác
                     st.session_state.quota_cooldown[(key_idx, tier_idx)] = current_time + 60
-                    st.session_state.key_status[key_idx] = f"🟡 Chờ hồi Quota {model_name[:8]}"
-                    last_error = f"{model_name} hết quota"
+                    st.session_state.key_status[key_idx] = f"🟡 Hết Quota {model_name}"
+                    last_error = f"{model_name} hết quota (Lỗi 429)"
                     break 
-                    
                 except Exception as e:
-                    last_error = str(e)
+                    last_error = f"Lỗi {model_name}: {str(e)}"
                     continue
 
-    return f"⚠️ **Toàn bộ hệ thống đều đang quá tải.** \n\nLỗi gần nhất: `{last_error}`. \nVui lòng đợi khoảng 1 phút rồi thử lại."
+    if all_keys_cooldown:
+        return "⚠️ **Tất cả các API Key đều đang hết Quota.**\n\nHệ thống đang trong thời gian đếm ngược (60 giây) để thử lại. Vui lòng đợi một lát!", "Error"
+        
+    return f"⚠️ **Các API Key hiện tại đang gặp lỗi kết nối.** \n\nVui lòng thử lại. \n*(Lỗi cuối: {last_error})*", "Error"
 
 # 6. Màn hình Đăng nhập
 if not st.session_state.auth_status:
