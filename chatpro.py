@@ -16,15 +16,12 @@ st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide"
 st.markdown(
     """
 <style>
-    /* Thanh cuộn nhỏ gọn */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #dadce0; border-radius: 3px; }
 
-    /* Tối ưu khoảng cách khung chat */
     .block-container { padding-top: 2rem; padding-bottom: 8rem; max-width: 900px; }
     
-    /* Bong bóng chat giống Gemini */
     [data-testid="stChatMessage"] {
         padding: 1rem 1.5rem;
         border-radius: 12px;
@@ -43,19 +40,18 @@ st.markdown(
         padding: 8px 16px;
         border-radius: 20px;
         font-weight: 600;
-        font-size: 16px;
+        font-size: 15px;
         cursor: default;
         margin-bottom: 20px;
+        border: 1px solid #e0e0e0;
     }
-    .model-badge:hover { background-color: #e8eaed; }
     
-    /* Cố định khu vực nhập liệu ở dưới cùng giống Gemini */
     .bottom-input-container {
         position: fixed;
         bottom: 0;
         left: 0;
         right: 0;
-        background: linear-gradient(to top, rgba(255,255,255,1) 80%, rgba(255,255,255,0));
+        background: linear-gradient(to top, rgba(255,255,255,1) 85%, rgba(255,255,255,0));
         padding: 10px 0 20px 0;
         z-index: 999;
         display: flex;
@@ -140,8 +136,9 @@ def update_session_title(session_id, new_title):
     run_query("UPDATE sessions SET title = %s WHERE id = %s", (new_title, session_id))
 
 # 4. State Management
-for key in ["img_reset_key", "auth_status", "role", "username", "current_session_id", "admin_selected_session"]:
-    if key not in st.session_state: st.session_state[key] = None if key not in ["img_reset_key", "auth_status"] else (0 if key == "img_reset_key" else False)
+for key in ["img_reset_key", "auth_status", "role", "username", "current_session_id", "admin_selected_session", "last_used_model"]:
+    if key not in st.session_state: 
+        st.session_state[key] = None if key not in ["img_reset_key", "auth_status", "last_used_model"] else (0 if key == "img_reset_key" else (False if key == "auth_status" else "Chưa xác định"))
 
 if "user" in st.query_params and "role" in st.query_params:
     st.session_state.auth_status, st.session_state.username, st.session_state.role = True, st.query_params["user"], st.query_params["role"]
@@ -151,17 +148,17 @@ if "key_status" not in st.session_state: st.session_state.key_status = {i: "🟢
 if "quota_cooldown" not in st.session_state: st.session_state.quota_cooldown = {}
 if "selected_persona" not in st.session_state: st.session_state.selected_persona = list(PERSONAS.keys())[0]
 
-# 5. Hàm gọi API "Vét Ngang" Xử lý lỗi 404
+# 5. Hàm gọi API "Vét Ngang" - Bắt Lỗi Triệt Để
 def query_gemini(prompt_text, history_list, image_data=None):
-    # Sử dụng tên model chuẩn, bỏ các bản lỗi 404
     MODEL_TIERS = [
-        ["gemini-1.5-pro"],       # TIER 0: Luôn ưu tiên dùng Pro
-        ["gemini-1.5-flash"]      # TIER 1: Nếu Pro hết hạn mức, hạ xuống Flash
+        ["gemini-1.5-pro"],       # TIER 0
+        ["gemini-1.5-flash"]      # TIER 1
     ]
 
     current_time = time.time()
     last_error = ""
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
+    all_keys_cooldown = True # Cờ kiểm tra xem tất cả các key có đang bị khóa 60s không
 
     for tier_idx, tier_models in enumerate(MODEL_TIERS):
         start_key = st.session_state.current_key_index
@@ -170,19 +167,21 @@ def query_gemini(prompt_text, history_list, image_data=None):
             
             if current_time < st.session_state.quota_cooldown.get((key_idx, tier_idx), 0):
                 continue 
-
+            
+            all_keys_cooldown = False # Có ít nhất 1 key sẵn sàng
             genai.configure(api_key=API_KEYS[key_idx])
 
             for model_name in tier_models:
                 try:
                     model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
-                    contents = [image_data, prompt_text] if image_data else [prompt_text]
-
-                    if history_list and not image_data:
+                    
+                    if image_data:
+                        res = model.generate_content([image_data, prompt_text])
+                    elif history_list:
                         chat = model.start_chat(history=history_list)
                         res = chat.send_message(prompt_text)
                     else:
-                        res = model.generate_content(contents)
+                        res = model.generate_content(prompt_text)
 
                     st.session_state.current_key_index = key_idx
                     tier_label = ["Pro", "Flash"][tier_idx]
@@ -192,16 +191,16 @@ def query_gemini(prompt_text, history_list, image_data=None):
                 except ResourceExhausted:
                     st.session_state.quota_cooldown[(key_idx, tier_idx)] = current_time + 60
                     st.session_state.key_status[key_idx] = f"🟡 Hết Quota {model_name}"
-                    last_error = f"{model_name} hết quota"
+                    last_error = f"{model_name} hết quota (Lỗi 429)"
                     break 
                 except Exception as e:
-                    # Bỏ qua lỗi 404 (Model không tồn tại ở phiên bản API này)
-                    if "404" in str(e) or "not found" in str(e).lower():
-                        continue
-                    last_error = str(e)
+                    last_error = f"Lỗi {model_name}: {str(e)}"
                     continue
 
-    return f"⚠️ **Các API Key hiện tại đang bận hoặc quá tải.** \nVui lòng đợi khoảng 1 phút rồi thử lại. \n*(Lỗi cuối: {last_error})*", "Error"
+    if all_keys_cooldown:
+        return "⚠️ **Tất cả các API Key đều đang hết Quota.**\n\nHệ thống đang trong thời gian đếm ngược (60 giây) để thử lại. Vui lòng đợi một lát!", "Error"
+        
+    return f"⚠️ **Các API Key hiện tại đang gặp lỗi kết nối.** \n\nVui lòng thử lại. \n*(Lỗi cuối: {last_error})*", "Error"
 
 # 6. Màn hình Đăng nhập
 if not st.session_state.auth_status:
@@ -272,8 +271,9 @@ if not active_sid and st.session_state.role == "user":
 
 db_messages = run_query("SELECT role, content FROM messages WHERE session_id = %s ORDER BY id ASC", (active_sid,), fetch="all") or []
 
-# HIỂN THỊ NÚT CHỌN MODEL Ở ĐẦU TRANG GIỐNG GEMINI
-st.markdown('<div class="model-badge">✨ Gemini 1.5 Pro <span style="color:#666; font-size:12px; margin-left:8px;">(Auto-fallback to Flash)</span></div>', unsafe_allow_html=True)
+# HIỂN THỊ NÚT CHỌN MODEL ĐỘNG Ở ĐẦU TRANG GIỐNG GEMINI
+display_model = "Gemini 1.5 Pro" if "pro" in st.session_state.last_used_model.lower() else ("Gemini 1.5 Flash" if "flash" in st.session_state.last_used_model.lower() else "Đang khởi tạo...")
+st.markdown(f'<div class="model-badge">✨ {display_model} <span style="color:#666; font-size:12px; margin-left:8px;">({st.session_state.last_used_model})</span></div>', unsafe_allow_html=True)
 
 if not db_messages and st.session_state.role == "user":
     st.markdown(f"<h1 style='background: -webkit-linear-gradient(45deg, #4285F4, #D96570); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>Xin chào, {st.session_state.username}</h1>", unsafe_allow_html=True)
@@ -284,10 +284,10 @@ for role, content in db_messages:
         st.markdown(content)
     gemini_history.append({"role": "user" if role == "user" else "model", "parts": [content]})
 
-# KHU VỰC NHẬP LIỆU GẮN CHẶT XUỐNG DƯỚI (BOTTOM CONTAINER)
+# KHU VỰC NHẬP LIỆU GẮN CHẶT XUỐNG DƯỚI
 st.markdown('<div class="bottom-input-container"><div class="bottom-input-inner">', unsafe_allow_html=True)
 
-# Khung chọn ảnh nhỏ gọn ngay trên ô chat
+# Khung chọn ảnh
 col_up, col_paste = st.columns([0.6, 0.4])
 rk = st.session_state.img_reset_key
 with col_up:
@@ -317,12 +317,12 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
             reply, used_model = query_gemini(prompt, gemini_history, image_data=img_data)
             
             if used_model != "Error":
-                # IN CHÍNH XÁC TÊN MODEL ĐÃ TRẢ LỜI NGAY TRÊN CÂU TRẢ LỜI
-                st.caption(f"⚡ Đã trả lời bằng: **{used_model}**")
+                st.session_state.last_used_model = used_model # Lưu lại model thành công để hiển thị lên trên đỉnh
                 
             st.markdown(reply)
 
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply))
+    
     if img_data: st.session_state.img_reset_key += 1
     st.rerun()
 
