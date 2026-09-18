@@ -150,9 +150,10 @@ if "selected_persona" not in st.session_state: st.session_state.selected_persona
 
 # 5. Hàm gọi API "Vét Ngang" - Bắt Lỗi Triệt Để
 def query_gemini(prompt_text, history_list, image_data=None):
+    # Đổi tên model sang bản -latest để tránh lỗi 404 của v1beta
     MODEL_TIERS = [
-        ["gemini-1.5-pro"],       # TIER 0
-        ["gemini-1.5-flash"]      # TIER 1
+        ["gemini-1.5-pro-latest"],       # TIER 0
+        ["gemini-1.5-flash-latest"]      # TIER 1
     ]
 
     current_time = time.time()
