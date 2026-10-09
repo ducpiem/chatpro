@@ -134,9 +134,20 @@ def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
             role = "user" if h["role"] == "user" else "assistant"
             messages.append({"role": role, "content": h["parts"][0]})
 
+        # Xử lý nội dung gửi đi (Hỗ trợ cả text và ảnh nếu có)
         current_content = []
         if image_data:
+            import base64
+            from io import BytesIO
+            
+            # Chuyển ảnh PIL thành định dạng base64 data url để gửi qua API chuẩn OpenAI/Proxy
+            buffered = BytesIO()
+            image_data.save(buffered, format="JPEG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+            img_url = f"data:image/jpeg;base64,{img_base64}"
+            
             current_content.append({"type": "text", "text": prompt_text})
+            current_content.append({"type": "image_url", "image_url": {"url": img_url}})
         else:
             current_content = prompt_text
 
@@ -205,32 +216,9 @@ with st.sidebar:
     st.divider()
     st.subheader("⚙️ Chọn Model AI")
     
+  # Chỉ để duy nhất 1 model bạn muốn dùng
     AVAILABLE_MODELS = [
-        "dungcsnd113/gemini-3.6-flash",
-        "dungcsnd113/gemini-3.7-flash",
-        "dungcsnd113/gemini-3.8-flash",
-        "dungcsnd113/gemini-pro-3.1",
-        "dungcsnd113/deepseek-v4.1-flash",
-        "dungcsnd113/deepseek-v4-pro",
-        "dungcsnd113/qwen3.8-max",
-        "models/deepseek-v4.1-flash",
-        "models/qwen3.8-27b",
-        "models/glm-5.3",
-        "models/kimi-k3",
-        "models/gpt-6-astra",
-        "models/claude-haiku-4.5",
-        "models/gemini-2.5-flash-lite",
-        "nhatnam201104/gemini-3.6",
-        "nhatnam201104/gemini-3.7",
-        "nhatnam201104/gemini-3.8",
-        "models/deepseek-v4-flash",
-        "models/gpt-5.6-luna",
-        "models/claude-sonnet-4.6",
-        "models/claude-opus-4.8",
-        "models/gpt-5.6-sol",
-        "openai/minimax-m3",
-        "openai/glm-5.2-free",
-        "openai/grok-4.5-free"
+        "nhatnam201104/gemini-3.6"
     ]
     
     selected_model = st.selectbox("Chọn Model sử dụng:", AVAILABLE_MODELS)
