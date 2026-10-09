@@ -71,10 +71,25 @@ def run_query(query, params=(), fetch=None):
 
 @st.cache_resource
 def init_db():
-    run_query("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, username TEXT, is_locked INT DEFAULT 0, created_at TEXT, title TEXT, is_pinned INT DEFAULT 0)")
-    run_query("CREATE TABLE IF NOT EXISTS messages (id SERIAL PRIMARY KEY, session_id TEXT, role TEXT, content TEXT)")
-
-init_db()
+    run_query("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY, 
+            username TEXT, 
+            is_locked INT DEFAULT 0, 
+            created_at TEXT, 
+            title TEXT, 
+            is_pinned INT DEFAULT 0
+        )
+    """)
+    # Bổ sung SERIAL PRIMARY KEY để sắp xếp và lưu trữ chuẩn xác
+    run_query("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY, 
+            session_id TEXT, 
+            role TEXT, 
+            content TEXT
+        )
+    """)
 
 def delete_session(session_id):
     run_query("DELETE FROM messages WHERE session_id = %s", (session_id,))
@@ -241,7 +256,8 @@ with st.sidebar:
     st.divider()
     st.subheader("⚙️ Chọn Model AI")
     
-    AVAILABLE_MODELS = [
+   AVAILABLE_MODELS = [
+        "dungcsnd113/gemini-3.6-flash",
         "nhatnam201104/gemini-3.6"
     ]
     
