@@ -117,9 +117,8 @@ if "key_status" not in st.session_state:
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = list(PERSONAS.keys())[0]
 
-# 5. Hàm gọi API trực tiếp với Model được chọn từ giao diện
+# 5. Hàm gọi API trực tiếp với Model được chọn từ giao diện (Hỗ trợ danh sách model của cổng thuê)
 def query_gemini_selected(prompt_text, history_list, chosen_model, image_data=None):
-    current_time = time.time()
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
     trimmed_history = history_list[-6:] if history_list else []
 
@@ -127,7 +126,6 @@ def query_gemini_selected(prompt_text, history_list, chosen_model, image_data=No
     active_key = API_KEYS[key_idx]
 
     try:
-        # Ép cấu hình key và base_url qua cổng gateway
         os.environ["GEMINI_API_KEY"] = active_key
         genai.configure(api_key=active_key)
 
@@ -144,7 +142,6 @@ def query_gemini_selected(prompt_text, history_list, chosen_model, image_data=No
         return res.text, chosen_model
 
     except Exception as e:
-        # Thử xoay vòng sang key tiếp theo nếu key hiện tại lỗi
         st.session_state.current_key_index = (key_idx + 1) % len(API_KEYS)
         return f"⚠️ Lỗi kết nối khi gọi model `{chosen_model}`: {str(e)}", "Error"
 
@@ -191,7 +188,7 @@ if st.session_state.role == "user" and not st.session_state.get("current_session
     if last_sess:
         st.session_state.current_session_id = last_sess[0]
 
-# 7. Giao diện Sidebar (Thêm ô Selectbox chọn Model từ danh sách của bạn)
+# 7. Giao diện Sidebar (Đã cập nhật đầy đủ danh sách model bạn cung cấp)
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
     st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI (Persona):", list(PERSONAS.keys()))
@@ -199,7 +196,6 @@ with st.sidebar:
     st.divider()
     st.subheader("⚙️ Chọn Model AI")
     
-    # Danh sách các model bạn đã cung cấp để đưa vào ô chọn
     AVAILABLE_MODELS = [
         "dungcsnd113/gemini-3.6-flash",
         "dungcsnd113/gemini-3.7-flash",
@@ -217,7 +213,15 @@ with st.sidebar:
         "models/gemini-2.5-flash-lite",
         "nhatnam201104/gemini-3.6",
         "nhatnam201104/gemini-3.7",
-        "nhatnam201104/gemini-3.8"
+        "nhatnam201104/gemini-3.8",
+        "models/deepseek-v4-flash",
+        "models/gpt-5.6-luna",
+        "models/claude-sonnet-4.6",
+        "models/claude-opus-4.8",
+        "models/gpt-5.6-sol",
+        "openai/minimax-m3",
+        "openai/glm-5.2-free",
+        "openai/grok-4.5-free"
     ]
     
     selected_model = st.selectbox("Chọn Model sử dụng:", AVAILABLE_MODELS)
