@@ -94,7 +94,7 @@ def toggle_pin_session(session_id, current_pin):
 def update_username(old_name, new_name):
     run_query("UPDATE sessions SET username = %s WHERE username = %s", (new_name, old_name))
 
-# 4. State Management
+# 4. State Management & Đảm bảo giữ Session ID ổn định
 if "img_reset_key" not in st.session_state:
     st.session_state.img_reset_key = 0
 
@@ -112,6 +112,9 @@ if "key_status" not in st.session_state:
     st.session_state.key_status = {i: "🟢 Sẵn sàng" for i in range(len(API_KEYS))}
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = list(PERSONAS.keys())[0]
+
+if "current_session_id" not in st.session_state:
+    st.session_state.current_session_id = None
 
 # 5. Hàm gọi API trực tiếp qua endpoint chuẩn Gemini của Gateway
 def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
@@ -217,6 +220,18 @@ if not st.session_state.auth_status:
                 st.error("Mật khẩu không chính xác.")
     st.stop()
 
+# Khởi tạo hoặc khôi phục active_sid ngay khi đăng nhập thành công
+if st.session_state.role == "user" and not st.session_state.current_session_id:
+    last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
+    if last_sess:
+        st.session_state.current_session_id = last_sess[0]
+    else:
+        new_id = str(uuid.uuid4())[:8]
+        run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
+        st.session_state.current_session_id = new_id
+
+active_sid = st.session_state.current_session_id if st.session_state.role == "user" else st.session_state.get("admin_selected_session")
+
 # 7. Giao diện Sidebar
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
@@ -249,7 +264,7 @@ with st.sidebar:
                     first_msg = run_query("SELECT content FROM messages WHERE session_id = %s AND role = 'user' ORDER BY id ASC LIMIT 1", (s_id,), fetch="one")
                     s_title = first_msg[0][:18] + "..." if first_msg else "Phiên chat trống"
 
-                is_active = (s_id == st.session_state.get("current_session_id"))
+                is_active = (s_id == st.session_state.current_session_id)
                 pin_icon = "📌 " if s_pin else ""
 
                 col_btn, col_opt = st.columns([0.75, 0.25])
@@ -274,7 +289,7 @@ with st.sidebar:
                         st.divider()
                         if st.button("🗑️ Xóa chat", key=f"del_{s_id}", type="primary"):
                             delete_session(s_id)
-                            if st.session_state.get("current_session_id") == s_id:
+                            if st.session_state.current_session_id == s_id:
                                 rem = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
                                 st.session_state.current_session_id = rem[0] if rem else None
                             st.rerun()
@@ -284,22 +299,7 @@ with st.sidebar:
         st.query_params.clear()
         st.rerun()
 
-# 8. Màn hình Chat Chính & Quản lý Session an toàn
-if "current_session_id" not in st.session_state:
-    st.session_state.current_session_id = None
-
-active_sid = st.session_state.current_session_id if st.session_state.role == "user" else st.session_state.get("admin_selected_session")
-
-if not active_sid and st.session_state.role == "user":
-    last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
-    if last_sess:
-        st.session_state.current_session_id = last_sess[0]
-    else:
-        new_id = str(uuid.uuid4())[:8]
-        run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
-        st.session_state.current_session_id = new_id
-    active_sid = st.session_state.current_session_id
-
+# 8. Màn hình Chat Chính & Tải lịch sử từ DB
 db_messages = []
 if active_sid:
     db_messages = run_query("SELECT role, content FROM messages WHERE session_id = %s ORDER BY id ASC", (active_sid,), fetch="all") or []
