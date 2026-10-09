@@ -81,7 +81,6 @@ def init_db():
             is_pinned INT DEFAULT 0
         )
     """)
-    # Bổ sung SERIAL PRIMARY KEY để sắp xếp và lưu trữ chuẩn xác
     run_query("""
         CREATE TABLE IF NOT EXISTS messages (
             id SERIAL PRIMARY KEY, 
@@ -90,6 +89,8 @@ def init_db():
             content TEXT
         )
     """)
+
+init_db()
 
 def delete_session(session_id):
     run_query("DELETE FROM messages WHERE session_id = %s", (session_id,))
@@ -235,7 +236,7 @@ if not st.session_state.auth_status:
                 st.error("Mật khẩu không chính xác.")
     st.stop()
 
-# Đảm bảo session được neo chặt bằng st.session_state để không bị mất khi render lại
+# Đảm bảo session được neo chặt
 if st.session_state.role == "user":
     if not st.session_state.current_session_id:
         last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
@@ -248,7 +249,7 @@ if st.session_state.role == "user":
 
 active_sid = st.session_state.current_session_id if st.session_state.role == "user" else st.session_state.get("admin_selected_session")
 
-# 7. Giao diện Sidebar
+# 7. Giao diện Sidebar (Đã cập nhật cả 2 model bạn muốn)
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
     st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI (Persona):", list(PERSONAS.keys()))
@@ -256,7 +257,7 @@ with st.sidebar:
     st.divider()
     st.subheader("⚙️ Chọn Model AI")
     
-   AVAILABLE_MODELS = [
+    AVAILABLE_MODELS = [
         "dungcsnd113/gemini-3.6-flash",
         "nhatnam201104/gemini-3.6"
     ]
@@ -393,11 +394,10 @@ st.markdown(f"""
 <div class="gemini-badge">✨ {selected_model.split('/')[-1]} ⌄</div>
 """, unsafe_allow_html=True)
 
-# Luồng xử lý chat (Lưu trực tiếp vào DB và hiện ngay lập tức không làm mất session)
+# Luồng xử lý chat
 if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
     user_msg_store = prompt if not img_data else f"[Đã gửi 1 hình ảnh] {prompt}"
     
-    # Lưu tin nhắn người dùng vào Neon DB
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, user_msg_store))
 
     with st.chat_message("user"):
@@ -412,7 +412,6 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
 
     reply_to_db = reply if used_model == "Error" else reply + f"\n\n<div style='text-align: right; font-size: 11px; color: #888; font-style: italic;'>(Model: {used_model})</div>"
     
-    # Lưu câu trả lời của AI vào Neon DB
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply_to_db))
 
     if img_data:
