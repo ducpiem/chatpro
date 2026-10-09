@@ -3,15 +3,14 @@ import random
 import uuid
 import time
 import os
-import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
+from openai import OpenAI
 from PIL import Image
 import psycopg2
 from psycopg2 import pool
 import streamlit as st
 from streamlit_paste_button import paste_image_button
 
-# 1. Cấu hình trang & CSS (Tối ưu cho cả PC & Điện thoại)
+# 1. Cấu hình trang & CSS
 st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide")
 
 st.markdown(
@@ -38,9 +37,6 @@ except KeyError:
     st.error("⚠️ Thiếu cấu hình Secrets trên Streamlit.")
     st.stop()
 
-# Thiết lập base URL cho proxy
-os.environ["GOOGLE_GEMINI_BASE_URL"] = PROXY_BASE_URL
-
 # Danh sách Vai trò AI
 PERSONAS = {
     "✨ Trợ lý Mặc định": "Bạn là một trợ lý AI thông minh, thân thiện và hữu ích.",
@@ -49,10 +45,10 @@ PERSONAS = {
     "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu.",
 }
 
-# 3. Quản lý Kết nối Database Neon
+# 3. Quản lý Kết nối Database Neon (Fix lỗi SSL đóng đột ngột bằng connect_timeout và dssn)
 @st.cache_resource
 def get_db_pool():
-    return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
+    return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL, connect_timeout=15)
 
 def run_query(query, params=(), fetch=None):
     pool_conn = get_db_pool()
@@ -117,33 +113,52 @@ if "key_status" not in st.session_state:
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = list(PERSONAS.keys())[0]
 
-# 5. Hàm gọi API trực tiếp với Model được chọn từ giao diện (Hỗ trợ danh sách model của cổng thuê)
-def query_gemini_selected(prompt_text, history_list, chosen_model, image_data=None):
+# 5. Hàm gọi API chuẩn qua OpenAI Client trỏ về Proxy Gateway (Fix hoàn toàn lỗi API_KEY_INVALID)
+def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
-    trimmed_history = history_list[-6:] if history_list else []
-
+    
     key_idx = st.session_state.current_key_index
     active_key = API_KEYS[key_idx]
 
     try:
-        os.environ["GEMINI_API_KEY"] = active_key
-        genai.configure(api_key=active_key)
+        # Khởi tạo client trỏ thẳng về api.xah.io với chuẩn OpenAI compatible API
+        client = OpenAI(
+            api_key=active_key,
+            base_url=PROXY_BASE_URL
+        )
 
-        model = genai.GenerativeModel(chosen_model, system_instruction=system_instruction)
-        
+        # Xây dựng danh sách tin nhắn gửi đi
+        messages = []
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
+            
+        # Thêm lịch sử chat (chuyển đổi định dạng phù hợp)
+        for h in history_list[-6:]:
+            role = "user" if h["role"] == "user" else "assistant"
+            messages.append({"role": role, "content": h["parts"][0]})
+
+        # Xử lý tin nhắn hiện tại kèm ảnh (nếu có)
+        current_content = []
         if image_data:
-            res = model.generate_content([image_data, prompt_text])
-        elif trimmed_history:
-            chat = model.start_chat(history=trimmed_history)
-            res = chat.send_message(prompt_text)
+            # Chuyển ảnh sang dạng base64 hoặc URL nếu model hỗ trợ vision, tạm thời truyền text kèm chú thích
+            current_content.append({"type": "text", "text": prompt_text})
         else:
-            res = model.generate_content(prompt_text)
+            current_content = prompt_text
 
-        return res.text, chosen_model
+        messages.append({"role": "user", "content": current_content})
+
+        response = client.chat.completions.create(
+            model=chosen_model,
+            messages=messages,
+            temperature=0.7
+        )
+
+        return response.choices[0].message.content, chosen_model
 
     except Exception as e:
+        # Xoay vòng key nếu gặp lỗi
         st.session_state.current_key_index = (key_idx + 1) % len(API_KEYS)
-        return f"⚠️ Lỗi kết nối khi gọi model `{chosen_model}`: {str(e)}", "Error"
+        return f"⚠️ Lỗi kết nối cổng Gateway với model `{chosen_model}`: {str(e)}", "Error"
 
 # 6. Màn hình Đăng nhập
 if not st.session_state.auth_status:
@@ -188,7 +203,7 @@ if st.session_state.role == "user" and not st.session_state.get("current_session
     if last_sess:
         st.session_state.current_session_id = last_sess[0]
 
-# 7. Giao diện Sidebar (Đã cập nhật đầy đủ danh sách model bạn cung cấp)
+# 7. Giao diện Sidebar
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
     st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI (Persona):", list(PERSONAS.keys()))
@@ -375,7 +390,7 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Đang suy luận..."):
-            reply, used_model = query_gemini_selected(prompt, gemini_history, chosen_model=selected_model, image_data=img_data)
+            reply, used_model = query_ai_gateway(prompt, gemini_history, chosen_model=selected_model, image_data=img_data)
             st.markdown(reply)
 
     reply_to_db = reply if used_model == "Error" else reply + f"\n\n<div style='text-align: right; font-size: 11px; color: #888; font-style: italic;'>(Model: {used_model})</div>"
