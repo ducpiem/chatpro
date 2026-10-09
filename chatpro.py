@@ -94,7 +94,7 @@ def toggle_pin_session(session_id, current_pin):
 def update_username(old_name, new_name):
     run_query("UPDATE sessions SET username = %s WHERE username = %s", (new_name, old_name))
 
-# 4. State Management & Đảm bảo giữ Session ID ổn định
+# 4. State Management
 if "img_reset_key" not in st.session_state:
     st.session_state.img_reset_key = 0
 
@@ -220,15 +220,16 @@ if not st.session_state.auth_status:
                 st.error("Mật khẩu không chính xác.")
     st.stop()
 
-# Khởi tạo hoặc khôi phục active_sid ngay khi đăng nhập thành công
-if st.session_state.role == "user" and not st.session_state.current_session_id:
-    last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
-    if last_sess:
-        st.session_state.current_session_id = last_sess[0]
-    else:
-        new_id = str(uuid.uuid4())[:8]
-        run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
-        st.session_state.current_session_id = new_id
+# Đảm bảo session được neo chặt bằng st.session_state để không bị mất khi render lại
+if st.session_state.role == "user":
+    if not st.session_state.current_session_id:
+        last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
+        if last_sess:
+            st.session_state.current_session_id = last_sess[0]
+        else:
+            new_id = str(uuid.uuid4())[:8]
+            run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
+            st.session_state.current_session_id = new_id
 
 active_sid = st.session_state.current_session_id if st.session_state.role == "user" else st.session_state.get("admin_selected_session")
 
@@ -376,15 +377,17 @@ st.markdown(f"""
 <div class="gemini-badge">✨ {selected_model.split('/')[-1]} ⌄</div>
 """, unsafe_allow_html=True)
 
-# Luồng xử lý chat
+# Luồng xử lý chat (Lưu trực tiếp vào DB và hiện ngay lập tức không làm mất session)
 if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
+    user_msg_store = prompt if not img_data else f"[Đã gửi 1 hình ảnh] {prompt}"
+    
+    # Lưu tin nhắn người dùng vào Neon DB
+    run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, user_msg_store))
+
     with st.chat_message("user"):
         if img_data:
             st.image(img_data, width=200)
         st.markdown(prompt)
-
-    user_msg_store = prompt if not img_data else f"[Đã gửi 1 hình ảnh] {prompt}"
-    run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, user_msg_store))
 
     with st.chat_message("assistant"):
         with st.spinner("Đang suy luận..."):
@@ -392,9 +395,9 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
             st.markdown(reply)
 
     reply_to_db = reply if used_model == "Error" else reply + f"\n\n<div style='text-align: right; font-size: 11px; color: #888; font-style: italic;'>(Model: {used_model})</div>"
+    
+    # Lưu câu trả lời của AI vào Neon DB
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply_to_db))
 
     if img_data:
         st.session_state.img_reset_key += 1
-
-    st.rerun()
