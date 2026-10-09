@@ -132,7 +132,7 @@ if "selected_persona" not in st.session_state:
 if "current_session_id" not in st.session_state:
     st.session_state.current_session_id = None
 
-# 5. Hàm gọi API trực tiếp qua endpoint chuẩn Gemini của Gateway
+# 5. Hàm gọi API trực tiếp qua endpoint chuẩn Gemini của Gateway (Đã sửa xử lý ảnh RGBA)
 def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
     
@@ -161,8 +161,11 @@ def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
         import base64
         from io import BytesIO
         
+        # Chuyển ảnh về chuẩn RGB để tránh lỗi lưu JPEG từ ảnh PNG trong suốt (RGBA/P)
+        rgb_image = image_data.convert("RGB")
+        
         buffered = BytesIO()
-        image_data.save(buffered, format="JPEG")
+        rgb_image.save(buffered, format="JPEG")
         img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
         
         current_parts.append({
@@ -224,7 +227,6 @@ if not st.session_state.auth_status:
                 st.query_params["user"] = st.session_state.username
                 st.query_params["role"] = st.session_state.role
 
-                # Tự động tạo hoặc lấy session gần nhất cho cả User và Admin
                 target_user = st.session_state.username
                 last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (target_user,), fetch="one")
                 if last_sess:
@@ -277,7 +279,6 @@ with st.sidebar:
     selected_model = st.selectbox("Chọn Model sử dụng:", AVAILABLE_MODELS)
     st.divider()
 
-    # Nút chat mới cho cả User và Admin
     if st.button("➕ Chat mới", use_container_width=True, type="primary"):
         new_id = str(uuid.uuid4())[:8]
         run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
