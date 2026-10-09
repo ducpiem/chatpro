@@ -3,7 +3,7 @@ import random
 import uuid
 import time
 import os
-from openai import OpenAI
+import requests
 from PIL import Image
 import psycopg2
 from psycopg2 import pool
@@ -113,57 +113,72 @@ if "key_status" not in st.session_state:
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = list(PERSONAS.keys())[0]
 
-# 5. Hàm gọi API chuẩn qua OpenAI Client trỏ về Proxy Gateway
+# 5. Hàm gọi API trực tiếp qua endpoint chuẩn Gemini của Gateway (Khắc phục hoàn toàn lỗi 404)
 def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
     
     key_idx = st.session_state.current_key_index
     active_key = API_KEYS[key_idx]
 
+    # Endpoint chuẩn Gemini cho gateway
+    endpoint_url = f"{PROXY_BASE_URL.rstrip('/')}/v1beta/models/{chosen_model}:generateContent"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {active_key}"
+    }
+
+    contents = []
+    
+    if system_instruction:
+        contents.append({"role": "user", "parts": [{"text": f"System Instruction: {system_instruction}"}]})
+        contents.append({"role": "model", "parts": [{"text": "Đã hiểu."}]})
+
+    for h in history_list[-6:]:
+        g_role = "user" if h["role"] == "user" else "model"
+        contents.append({"role": g_role, "parts": [{"text": h["parts"][0]}]})
+
+    current_parts = []
+    if image_data:
+        import base64
+        from io import BytesIO
+        
+        buffered = BytesIO()
+        image_data.save(buffered, format="JPEG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        
+        current_parts.append({
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": img_base64
+            }
+        })
+    
+    current_parts.append({"text": prompt_text})
+    contents.append({"role": "user", "parts": current_parts})
+
+    payload = {
+        "contents": contents
+    }
+
     try:
-        client = OpenAI(
-            api_key=active_key,
-            base_url=PROXY_BASE_URL
-        )
-
-        messages = []
-        if system_instruction:
-            messages.append({"role": "system", "content": system_instruction})
-            
-        for h in history_list[-6:]:
-            role = "user" if h["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": h["parts"][0]})
-
-        # Xử lý nội dung gửi đi (Hỗ trợ cả text và ảnh nếu có)
-        current_content = []
-        if image_data:
-            import base64
-            from io import BytesIO
-            
-            # Chuyển ảnh PIL thành định dạng base64 data url để gửi qua API chuẩn OpenAI/Proxy
-            buffered = BytesIO()
-            image_data.save(buffered, format="JPEG")
-            img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-            img_url = f"data:image/jpeg;base64,{img_base64}"
-            
-            current_content.append({"type": "text", "text": prompt_text})
-            current_content.append({"type": "image_url", "image_url": {"url": img_url}})
+        response = requests.post(endpoint_url, headers=headers, json=payload, timeout=30)
+        
+        if response.status_code == 200:
+            res_json = response.json()
+            candidates = res_json.get("candidates", [])
+            if candidates:
+                text_reply = candidates[0]["content"]["parts"][0]["text"]
+                return text_reply, chosen_model
+            else:
+                return "⚠️ Phản hồi từ cổng gateway trống.", "Error"
         else:
-            current_content = prompt_text
-
-        messages.append({"role": "user", "content": current_content})
-
-        response = client.chat.completions.create(
-            model=chosen_model,
-            messages=messages,
-            temperature=0.7
-        )
-
-        return response.choices[0].message.content, chosen_model
+            st.session_state.current_key_index = (key_idx + 1) % len(API_KEYS)
+            return f"⚠️ Lỗi HTTP {response.status_code}: {response.text}", "Error"
 
     except Exception as e:
         st.session_state.current_key_index = (key_idx + 1) % len(API_KEYS)
-        return f"⚠️ Lỗi kết nối cổng Gateway với model `{chosen_model}`: {str(e)}", "Error"
+        return f"⚠️ Lỗi kết nối đến gateway: {str(e)}", "Error"
 
 # 6. Màn hình Đăng nhập
 if not st.session_state.auth_status:
@@ -208,7 +223,7 @@ if st.session_state.role == "user" and not st.session_state.get("current_session
     if last_sess:
         st.session_state.current_session_id = last_sess[0]
 
-# 7. Giao diện Sidebar
+# 7. Giao diện Sidebar (Cố định model nhatnam201104/gemini-3.6)
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
     st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI (Persona):", list(PERSONAS.keys()))
@@ -216,7 +231,6 @@ with st.sidebar:
     st.divider()
     st.subheader("⚙️ Chọn Model AI")
     
-  # Chỉ để duy nhất 1 model bạn muốn dùng
     AVAILABLE_MODELS = [
         "nhatnam201104/gemini-3.6"
     ]
