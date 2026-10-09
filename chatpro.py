@@ -17,59 +17,12 @@ st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide"
 st.markdown(
     """
 <style>
-    /* Thanh cuộn nhỏ gọn */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #f1f1f1; }
     ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
-
-    /* Tối ưu khoảng cách khung chat */
     .block-container { padding-top: 1rem; padding-bottom: 4rem; max-width: 900px; }
     .stChatInputContainer { padding-bottom: 10px; }
-
-    /* Nút Lên/Xuống: Nhỏ gọn, nằm ở giữa lề phải */
-    .scroll-btn-container {
-        position: fixed;
-        top: 50%;
-        right: 8px;
-        transform: translateY(-50%);
-        z-index: 99999;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-    }
-    .scroll-btn {
-        background-color: rgba(66, 133, 244, 0.8);
-        color: white;
-        border: none;
-        border-radius: 50%;
-        width: 32px;
-        height: 32px;
-        font-size: 14px;
-        cursor: pointer;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: 0.2s;
-    }
-    .scroll-btn:hover {
-        background-color: #3367D6;
-        transform: scale(1.1);
-    }
-
-    /* Tối ưu riêng cho Màn hình Điện thoại */
-    @media (max-width: 768px) {
-        .block-container { padding-left: 0.5rem; padding-right: 0.5rem; padding-top: 0.5rem; }
-        .scroll-btn-container { right: 4px; }
-        .scroll-btn { width: 28px; height: 28px; font-size: 12px; }
-    }
 </style>
-
-<!-- Script xử lý cuộn trang mượt mà -->
-<div class="scroll-btn-container">
-    <button class="scroll-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'});" title="Lên đầu trang">⬆️</button>
-    <button class="scroll-btn" onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});" title="Xuống cuối trang">⬇️</button>
-</div>
 """,
     unsafe_allow_html=True,
 )
@@ -82,10 +35,10 @@ try:
     NEON_DB_URL = st.secrets["NEON_DATABASE_URL"]
     PROXY_BASE_URL = st.secrets.get("GOOGLE_GEMINI_BASE_URL", "https://api.xah.io")
 except KeyError:
-    st.error("⚠️ Thiếu cấu hình Secrets (Cần GEMINI_API_KEYS, ADMIN_PASSWORD, USER_PASSWORD, NEON_DATABASE_URL).")
+    st.error("⚠️ Thiếu cấu hình Secrets trên Streamlit.")
     st.stop()
 
-# Cấu hình biến môi trường trỏ qua cổng trung gian cho toàn bộ tiến trình ứng dụng
+# Thiết lập base URL cho proxy
 os.environ["GOOGLE_GEMINI_BASE_URL"] = PROXY_BASE_URL
 
 # Danh sách Vai trò AI
@@ -96,7 +49,7 @@ PERSONAS = {
     "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu.",
 }
 
-# 3. Quản lý Kết nối Database Neon (Tối ưu Tốc Độ với Connection Pool)
+# 3. Quản lý Kết nối Database Neon
 @st.cache_resource
 def get_db_pool():
     return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
@@ -122,28 +75,11 @@ def run_query(query, params=(), fetch=None):
 
 @st.cache_resource
 def init_db():
-    run_query("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            username TEXT,
-            is_locked INT DEFAULT 0,
-            created_at TEXT,
-            title TEXT,
-            is_pinned INT DEFAULT 0
-        )
-    """)
-    run_query("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id SERIAL PRIMARY KEY,
-            session_id TEXT,
-            role TEXT,
-            content TEXT
-        )
-    """)
+    run_query("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, username TEXT, is_locked INT DEFAULT 0, created_at TEXT, title TEXT, is_pinned INT DEFAULT 0)")
+    run_query("CREATE TABLE IF NOT EXISTS messages (id SERIAL PRIMARY KEY, session_id TEXT, role TEXT, content TEXT)")
 
 init_db()
 
-# Các hàm thao tác Database
 def delete_session(session_id):
     run_query("DELETE FROM messages WHERE session_id = %s", (session_id,))
     run_query("DELETE FROM sessions WHERE id = %s", (session_id,))
@@ -174,82 +110,43 @@ if "auth_status" not in st.session_state:
     else:
         st.session_state.auth_status = False
 
-if "role" not in st.session_state:
-    st.session_state.role = None
-if "username" not in st.session_state:
-    st.session_state.username = None
-if "current_session_id" not in st.session_state:
-    st.session_state.current_session_id = None
 if "current_key_index" not in st.session_state:
     st.session_state.current_key_index = random.randint(0, len(API_KEYS) - 1)
 if "key_status" not in st.session_state:
     st.session_state.key_status = {i: "🟢 Sẵn sàng" for i in range(len(API_KEYS))}
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = list(PERSONAS.keys())[0]
-if "quota_cooldown" not in st.session_state:
-    st.session_state.quota_cooldown = {}
 
-# 5. Hàm gọi API tương thích Cổng Trung Gian (Proxy Gateway)
-def query_gemini(prompt_text, history_list, image_data=None):
-    # Sử dụng các model chuẩn có gắn đúng định dạng định tuyến của hệ thống thuê
-    MODEL_TIERS = [
-        ["dungcsnd113/gemini-pro-3.1", "dungcsnd113/gemini-3.6-flash"],          # TIER 0: Pro & Flash chính
-        ["dungcsnd113/deepseek-v4.1-flash", "dungcsnd113/deepseek-v4-pro"],     # TIER 1: DeepSeek tốc độ cao
-        ["models/gemini-2.5-flash-lite", "dungcsnd113/qwen3.8-max"]            # TIER 2: Dự phòng (vét cuối)
-    ]
-
+# 5. Hàm gọi API trực tiếp với Model được chọn từ giao diện
+def query_gemini_selected(prompt_text, history_list, chosen_model, image_data=None):
     current_time = time.time()
-    last_error = ""
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
-    all_keys_cooldown = True 
-    
     trimmed_history = history_list[-6:] if history_list else []
 
-    for tier_idx, tier_models in enumerate(MODEL_TIERS):
-        start_key = st.session_state.current_key_index
-        for offset in range(len(API_KEYS)):
-            key_idx = (start_key + offset) % len(API_KEYS)
-            
-            if current_time < st.session_state.quota_cooldown.get((key_idx, tier_idx), 0):
-                continue 
-            
-            all_keys_cooldown = False 
-            
-            # Gán key vào biến môi trường cục bộ để chuyển hướng qua gateway
-            os.environ["GEMINI_API_KEY"] = API_KEYS[key_idx]
-            genai.configure(api_key=API_KEYS[key_idx])
+    key_idx = st.session_state.current_key_index
+    active_key = API_KEYS[key_idx]
 
-            for model_name in tier_models:
-                try:
-                    model = genai.GenerativeModel(model_name, system_instruction=system_instruction)
-                    
-                    if image_data:
-                        res = model.generate_content([image_data, prompt_text])
-                    elif trimmed_history:
-                        chat = model.start_chat(history=trimmed_history)
-                        res = chat.send_message(prompt_text)
-                    else:
-                        res = model.generate_content(prompt_text)
+    try:
+        # Ép cấu hình key và base_url qua cổng gateway
+        os.environ["GEMINI_API_KEY"] = active_key
+        genai.configure(api_key=active_key)
 
-                    st.session_state.current_key_index = key_idx
-                    tier_labels = ["Pro/Flash", "DeepSeek", "Dự phòng"]
-                    tier_label = tier_labels[tier_idx] if tier_idx < len(tier_labels) else "Lite"
-                    st.session_state.key_status[key_idx] = f"🟢 Đang dùng ({tier_label})"
-                    return res.text, model_name
-
-                except ResourceExhausted:
-                    st.session_state.quota_cooldown[(key_idx, tier_idx)] = current_time + 60
-                    st.session_state.key_status[key_idx] = f"🟡 Hết Quota {model_name}"
-                    last_error = f"{model_name} hết quota (Lỗi 429)"
-                    break 
-                except Exception as e:
-                    last_error = f"Lỗi {model_name}: {str(e)}"
-                    continue
-
-    if all_keys_cooldown:
-        return "⚠️ **Tất cả các API Key đều đang hết Quota.**\n\nHệ thống đang trong thời gian đếm ngược (60 giây) để thử lại. Vui lòng đợi một lát!", "Error"
+        model = genai.GenerativeModel(chosen_model, system_instruction=system_instruction)
         
-    return f"⚠️ **Các API Key hiện tại đang gặp lỗi kết nối.** \n\nVui lòng thử lại. \n*(Lỗi cuối: {last_error})*", "Error"
+        if image_data:
+            res = model.generate_content([image_data, prompt_text])
+        elif trimmed_history:
+            chat = model.start_chat(history=trimmed_history)
+            res = chat.send_message(prompt_text)
+        else:
+            res = model.generate_content(prompt_text)
+
+        return res.text, chosen_model
+
+    except Exception as e:
+        # Thử xoay vòng sang key tiếp theo nếu key hiện tại lỗi
+        st.session_state.current_key_index = (key_idx + 1) % len(API_KEYS)
+        return f"⚠️ Lỗi kết nối khi gọi model `{chosen_model}`: {str(e)}", "Error"
 
 # 6. Màn hình Đăng nhập
 if not st.session_state.auth_status:
@@ -289,16 +186,41 @@ if not st.session_state.auth_status:
                 st.error("Mật khẩu không chính xác.")
     st.stop()
 
-# Khôi phục session ID
-if st.session_state.role == "user" and not st.session_state.current_session_id:
+if st.session_state.role == "user" and not st.session_state.get("current_session_id"):
     last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
     if last_sess:
         st.session_state.current_session_id = last_sess[0]
 
-# 7. Giao diện Sidebar
+# 7. Giao diện Sidebar (Thêm ô Selectbox chọn Model từ danh sách của bạn)
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
     st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI (Persona):", list(PERSONAS.keys()))
+    
+    st.divider()
+    st.subheader("⚙️ Chọn Model AI")
+    
+    # Danh sách các model bạn đã cung cấp để đưa vào ô chọn
+    AVAILABLE_MODELS = [
+        "dungcsnd113/gemini-3.6-flash",
+        "dungcsnd113/gemini-3.7-flash",
+        "dungcsnd113/gemini-3.8-flash",
+        "dungcsnd113/gemini-pro-3.1",
+        "dungcsnd113/deepseek-v4.1-flash",
+        "dungcsnd113/deepseek-v4-pro",
+        "dungcsnd113/qwen3.8-max",
+        "models/deepseek-v4.1-flash",
+        "models/qwen3.8-27b",
+        "models/glm-5.3",
+        "models/kimi-k3",
+        "models/gpt-6-astra",
+        "models/claude-haiku-4.5",
+        "models/gemini-2.5-flash-lite",
+        "nhatnam201104/gemini-3.6",
+        "nhatnam201104/gemini-3.7",
+        "nhatnam201104/gemini-3.8"
+    ]
+    
+    selected_model = st.selectbox("Chọn Model sử dụng:", AVAILABLE_MODELS)
     st.divider()
 
     if st.session_state.role == "user":
@@ -348,49 +270,6 @@ with st.sidebar:
                                 st.session_state.current_session_id = rem[0] if rem else None
                             st.rerun()
 
-    elif st.session_state.role == "admin":
-        st.subheader("🛠 Quản trị viên")
-        all_s = run_query("SELECT id, username FROM sessions ORDER BY created_at DESC", fetch="all")
-        options = {f"{s[1]} - {s[0]}": s[0] for s in all_s} if all_s else {}
-        sel = st.selectbox("👁️ Theo dõi chat:", list(options.keys())) if options else None
-        if sel:
-            st.session_state.admin_selected_session = options[sel]
-
-        st.divider()
-        st.markdown("### 👥 Quản lý User")
-        all_users_res = run_query("SELECT DISTINCT username FROM sessions", fetch="all")
-        all_users = [u[0] for u in all_users_res] if all_users_res else []
-
-        if all_users:
-            selected_user_to_del = st.selectbox("Chọn User cần xóa:", all_users)
-            with st.popover(f"🗑️ Xóa User: {selected_user_to_del}"):
-                st.warning(f"⚠️ Thao tác này sẽ XÓA SẠCH toàn bộ dữ liệu lịch sử chat của user '{selected_user_to_del}'!")
-                if st.button("Xác nhận Xóa User", type="primary", key="confirm_del_user"):
-                    delete_user_data(selected_user_to_del)
-                    st.success(f"Đã xóa thành công User {selected_user_to_del}!")
-                    st.session_state.admin_selected_session = None
-                    st.rerun()
-        else:
-            st.caption("Chưa có User nào trong hệ thống.")
-
-    st.divider()
-
-    if st.session_state.role == "user":
-        with st.expander(f"👤 Tài khoản: {st.session_state.username}", expanded=False):
-            new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
-            if st.button("Cập nhật tên"):
-                if new_username.strip() and new_username != st.session_state.username:
-                    update_username(st.session_state.username, new_username.strip())
-                    st.session_state.username = new_username.strip()
-                    st.query_params["user"] = st.session_state.username
-                    st.success("Đã đổi tên!")
-                    st.rerun()
-
-    with st.expander("🔑 Trạng thái API Keys", expanded=False):
-        for idx, status in st.session_state.key_status.items():
-            active_mark = "👈 (Đang dùng)" if idx == st.session_state.current_key_index else ""
-            st.caption(f"**Key #{idx+1}:** {status} {active_mark}")
-
     if st.button("Đăng xuất", use_container_width=True):
         st.session_state.auth_status = False
         st.query_params.clear()
@@ -417,20 +296,6 @@ if not db_messages and st.session_state.role == "user":
     st.write("<br>", unsafe_allow_html=True)
     st.markdown(f"<h1 style='background: -webkit-linear-gradient(45deg, #4285F4, #D96570); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>Xin chào, {st.session_state.username}</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='color: #666;'>Tôi có thể giúp gì cho bạn hôm nay?</h3>", unsafe_allow_html=True)
-
-    st.write("<br>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    quick_prompt = None
-    if c1.button("💡 Kế hoạch du lịch 3 ngày 2 đêm", use_container_width=True):
-        quick_prompt = "Hãy lập cho tôi kế hoạch du lịch Đà Nẵng 3 ngày 2 đêm tối ưu chi phí."
-    if c2.button("💻 Viết code Python đọc file Excel", use_container_width=True):
-        quick_prompt = "Hướng dẫn viết code Python dùng pandas để đọc và xử lý file Excel."
-    if c3.button("✍️ Viết Email xin nghỉ phép lịch sự", use_container_width=True):
-        quick_prompt = "Soạn cho tôi một mẫu email xin nghỉ phép 2 ngày vì lý do cá nhân."
-
-    if quick_prompt:
-        run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, quick_prompt))
-        st.rerun()
 
 # Render lịch sử tin nhắn
 gemini_history = []
@@ -466,15 +331,7 @@ if img_data:
             st.session_state.img_reset_key += 1
             st.rerun()
 
-# Badge hiển thị trạng thái
-active_status = st.session_state.key_status.get(st.session_state.current_key_index, "")
-if "Pro" in active_status:
-    badge_label = "Pro 3.1"
-elif "Flash" in active_status:
-    badge_label = "Flash 3.6"
-else:
-    badge_label = "Flash-Lite"
-
+# Badge hiển thị model đang chọn
 st.markdown(f"""
 <style>
 .gemini-badge {{
@@ -499,7 +356,7 @@ st.markdown(f"""
     .gemini-badge {{ right: 15px; bottom: 82px; }}
 }}
 </style>
-<div class="gemini-badge">✨ {badge_label} ⌄</div>
+<div class="gemini-badge">✨ {selected_model.split('/')[-1]} ⌄</div>
 """, unsafe_allow_html=True)
 
 # Luồng xử lý chat
@@ -514,10 +371,10 @@ if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Đang suy luận..."):
-            reply, used_model = query_gemini(prompt, gemini_history, image_data=img_data)
+            reply, used_model = query_gemini_selected(prompt, gemini_history, chosen_model=selected_model, image_data=img_data)
             st.markdown(reply)
 
-    reply_to_db = reply if used_model == "Error" else reply + f"\n\n<div style='text-align: right; font-size: 11px; color: #888; font-style: italic;'>(Trả lời bằng: {used_model})</div>"
+    reply_to_db = reply if used_model == "Error" else reply + f"\n\n<div style='text-align: right; font-size: 11px; color: #888; font-style: italic;'>(Model: {used_model})</div>"
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply_to_db))
 
     if img_data:
