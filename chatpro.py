@@ -191,11 +191,11 @@ if "quota_cooldown" not in st.session_state:
 
 # 5. Hàm gọi API tương thích Cổng Trung Gian (Proxy Gateway)
 def query_gemini(prompt_text, history_list, image_data=None):
-    # Sử dụng các tên model chuẩn hoặc tên model có gắn tiền tố tài khoản của cổng thuê
+    # Sử dụng các model chuẩn có gắn đúng định dạng định tuyến của hệ thống thuê
     MODEL_TIERS = [
-        ["gemini-3.1-pro-preview"],          
-        ["gemini-3.6-flash", "gemini-3.7-flash"], 
-        ["gemini-3.5-flash-lite"]     
+        ["dungcsnd113/gemini-pro-3.1", "dungcsnd113/gemini-3.6-flash"],          # TIER 0: Pro & Flash chính
+        ["dungcsnd113/deepseek-v4.1-flash", "dungcsnd113/deepseek-v4-pro"],     # TIER 1: DeepSeek tốc độ cao
+        ["models/gemini-2.5-flash-lite", "dungcsnd113/qwen3.8-max"]            # TIER 2: Dự phòng (vét cuối)
     ]
 
     current_time = time.time()
@@ -232,7 +232,7 @@ def query_gemini(prompt_text, history_list, image_data=None):
                         res = model.generate_content(prompt_text)
 
                     st.session_state.current_key_index = key_idx
-                    tier_labels = ["Pro", "Flash", "Lite"]
+                    tier_labels = ["Pro/Flash", "DeepSeek", "Dự phòng"]
                     tier_label = tier_labels[tier_idx] if tier_idx < len(tier_labels) else "Lite"
                     st.session_state.key_status[key_idx] = f"🟢 Đang dùng ({tier_label})"
                     return res.text, model_name
