@@ -45,7 +45,7 @@ PERSONAS = {
     "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu.",
 }
 
-# 3. Quản lý Kết nối Database Neon (Fix lỗi SSL đóng đột ngột bằng connect_timeout và dssn)
+# 3. Quản lý Kết nối Database Neon
 @st.cache_resource
 def get_db_pool():
     return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL, connect_timeout=15)
@@ -113,7 +113,7 @@ if "key_status" not in st.session_state:
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = list(PERSONAS.keys())[0]
 
-# 5. Hàm gọi API chuẩn qua OpenAI Client trỏ về Proxy Gateway (Fix hoàn toàn lỗi API_KEY_INVALID)
+# 5. Hàm gọi API chuẩn qua OpenAI Client trỏ về Proxy Gateway
 def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
     
@@ -121,26 +121,21 @@ def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
     active_key = API_KEYS[key_idx]
 
     try:
-        # Khởi tạo client trỏ thẳng về api.xah.io với chuẩn OpenAI compatible API
         client = OpenAI(
             api_key=active_key,
             base_url=PROXY_BASE_URL
         )
 
-        # Xây dựng danh sách tin nhắn gửi đi
         messages = []
         if system_instruction:
             messages.append({"role": "system", "content": system_instruction})
             
-        # Thêm lịch sử chat (chuyển đổi định dạng phù hợp)
         for h in history_list[-6:]:
             role = "user" if h["role"] == "user" else "assistant"
             messages.append({"role": role, "content": h["parts"][0]})
 
-        # Xử lý tin nhắn hiện tại kèm ảnh (nếu có)
         current_content = []
         if image_data:
-            # Chuyển ảnh sang dạng base64 hoặc URL nếu model hỗ trợ vision, tạm thời truyền text kèm chú thích
             current_content.append({"type": "text", "text": prompt_text})
         else:
             current_content = prompt_text
@@ -156,7 +151,6 @@ def query_ai_gateway(prompt_text, history_list, chosen_model, image_data=None):
         return response.choices[0].message.content, chosen_model
 
     except Exception as e:
-        # Xoay vòng key nếu gặp lỗi
         st.session_state.current_key_index = (key_idx + 1) % len(API_KEYS)
         return f"⚠️ Lỗi kết nối cổng Gateway với model `{chosen_model}`: {str(e)}", "Error"
 
@@ -321,7 +315,7 @@ gemini_history = []
 for role, content in db_messages:
     with st.chat_message(role):
         st.markdown(content, unsafe_allow_html=True)
-    g_role = "user" if role == "user" else "model"
+    g_role = "user" if role == "user" else "assistant"
     clean_content = content.split("<div style='text-align: right")[0].strip()
     gemini_history.append({"role": g_role, "parts": [clean_content]})
 
