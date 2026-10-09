@@ -11,41 +11,92 @@ from psycopg2 import pool
 import streamlit as st
 from streamlit_paste_button import paste_image_button
 
-# 1. Cấu hình trang & CSS
+# 1. Cấu hình trang & CSS (Tối ưu cho cả PC & Điện thoại)
 st.set_page_config(page_title="Gemini Clone Pro", page_icon="✨", layout="wide")
 
-st.markdown("""
+st.markdown(
+    """
 <style>
+    /* Thanh cuộn nhỏ gọn */
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #f1f1f1; }
     ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+
+    /* Tối ưu khoảng cách khung chat */
     .block-container { padding-top: 1rem; padding-bottom: 4rem; max-width: 900px; }
     .stChatInputContainer { padding-bottom: 10px; }
+
+    /* Nút Lên/Xuống: Nhỏ gọn, nằm ở giữa lề phải */
+    .scroll-btn-container {
+        position: fixed;
+        top: 50%;
+        right: 8px;
+        transform: translateY(-50%);
+        z-index: 99999;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    .scroll-btn {
+        background-color: rgba(66, 133, 244, 0.8);
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 32px;
+        height: 32px;
+        font-size: 14px;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: 0.2s;
+    }
+    .scroll-btn:hover {
+        background-color: #3367D6;
+        transform: scale(1.1);
+    }
+
+    /* Tối ưu riêng cho Màn hình Điện thoại */
+    @media (max-width: 768px) {
+        .block-container { padding-left: 0.5rem; padding-right: 0.5rem; padding-top: 0.5rem; }
+        .scroll-btn-container { right: 4px; }
+        .scroll-btn { width: 28px; height: 28px; font-size: 12px; }
+    }
 </style>
-""", unsafe_allow_html=True)
+
+<!-- Script xử lý cuộn trang mượt mà -->
+<div class="scroll-btn-container">
+    <button class="scroll-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'});" title="Lên đầu trang">⬆️</button>
+    <button class="scroll-btn" onclick="window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});" title="Xuống cuối trang">⬇️</button>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 # 2. Kiểm tra Secrets
 try:
     API_KEYS = st.secrets["GEMINI_API_KEYS"]
     ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-    USER_PASSWORD = st.secrets.get("USER_PASSWORD", "123456")
+    USER_PASSWORD = st.secrets.get("USER_PASSWORD", "1")
     NEON_DB_URL = st.secrets["NEON_DATABASE_URL"]
     PROXY_BASE_URL = st.secrets.get("GOOGLE_GEMINI_BASE_URL", "https://api.xah.io")
 except KeyError:
-    st.error("⚠️ Thiếu cấu hình Secrets trên Streamlit.")
+    st.error("⚠️ Thiếu cấu hình Secrets (Cần GEMINI_API_KEYS, ADMIN_PASSWORD, USER_PASSWORD, NEON_DATABASE_URL).")
     st.stop()
 
-# QUAN TRỌNG: Cấu hình biến môi trường trỏ qua cổng trung gian độc lập
+# Cấu hình biến môi trường trỏ qua cổng trung gian cho toàn bộ tiến trình ứng dụng
 os.environ["GOOGLE_GEMINI_BASE_URL"] = PROXY_BASE_URL
 
+# Danh sách Vai trò AI
 PERSONAS = {
     "✨ Trợ lý Mặc định": "Bạn là một trợ lý AI thông minh, thân thiện và hữu ích.",
-    "💻 Lập trình viên Senior": "Bạn là một chuyên gia lập trình Senior. Trả lời tập trung vào mã nguồn tối ưu, ngắn gọn.",
-    "✍️ Chuyên gia Content": "Bạn là một chuyên gia sáng tạo nội dung và Marketing.",
-    "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách đơn giản.",
+    "💻 Lập trình viên Senior": "Bạn là một chuyên gia lập trình Senior. Trả lời tập trung vào mã nguồn tối ưu, ngắn gọn, có giải thích rõ ràng.",
+    "✍️ Chuyên gia Content": "Bạn là một chuyên gia sáng tạo nội dung và Marketing. Trả lời với giọng văn lôi cuốn, sáng tạo.",
+    "🎓 Giáo sư Giảng dạy": "Bạn là một giáo sư đại học. Hãy giải thích các khái niệm phức tạp một cách vô cùng đơn giản, dễ hiểu.",
 }
 
-# 3. Kết nối Neon Database
+# 3. Quản lý Kết nối Database Neon (Tối ưu Tốc Độ với Connection Pool)
 @st.cache_resource
 def get_db_pool():
     return psycopg2.pool.SimpleConnectionPool(1, 10, NEON_DB_URL)
@@ -56,7 +107,11 @@ def run_query(query, params=(), fetch=None):
     try:
         with conn.cursor() as cur:
             cur.execute(query, params)
-            res = cur.fetchone() if fetch == "one" else (cur.fetchall() if fetch == "all" else None)
+            res = None
+            if fetch == "one":
+                res = cur.fetchone()
+            elif fetch == "all":
+                res = cur.fetchall()
         conn.commit()
         return res
     except Exception as e:
@@ -67,12 +122,28 @@ def run_query(query, params=(), fetch=None):
 
 @st.cache_resource
 def init_db():
-    run_query("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, username TEXT, is_locked INT DEFAULT 0, created_at TEXT, title TEXT, is_pinned INT DEFAULT 0)")
-    run_query("CREATE TABLE IF NOT EXISTS messages (id SERIAL PRIMARY KEY, session_id TEXT, role TEXT, content TEXT)")
+    run_query("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            username TEXT,
+            is_locked INT DEFAULT 0,
+            created_at TEXT,
+            title TEXT,
+            is_pinned INT DEFAULT 0
+        )
+    """)
+    run_query("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            session_id TEXT,
+            role TEXT,
+            content TEXT
+        )
+    """)
 
 init_db()
 
-# Các hàm phụ trợ cơ sở dữ liệu giữ nguyên
+# Các hàm thao tác Database
 def delete_session(session_id):
     run_query("DELETE FROM messages WHERE session_id = %s", (session_id,))
     run_query("DELETE FROM sessions WHERE id = %s", (session_id,))
@@ -85,43 +156,53 @@ def update_session_title(session_id, new_title):
     run_query("UPDATE sessions SET title = %s WHERE id = %s", (new_title, session_id))
 
 def toggle_pin_session(session_id, current_pin):
-    run_query("UPDATE sessions SET is_pinned = %s WHERE id = %s", (0 if current_pin == 1 else 1, session_id))
+    new_pin = 0 if current_pin == 1 else 1
+    run_query("UPDATE sessions SET is_pinned = %s WHERE id = %s", (new_pin, session_id))
 
 def update_username(old_name, new_name):
     run_query("UPDATE sessions SET username = %s WHERE username = %s", (new_name, old_name))
 
 # 4. State Management
+if "img_reset_key" not in st.session_state:
+    st.session_state.img_reset_key = 0
+
 if "auth_status" not in st.session_state:
-    st.session_state.auth_status = "user" in st.query_params and "role" in st.query_params
-    if st.session_state.auth_status:
+    if "user" in st.query_params and "role" in st.query_params:
+        st.session_state.auth_status = True
         st.session_state.username = st.query_params["user"]
         st.session_state.role = st.query_params["role"]
+    else:
+        st.session_state.auth_status = False
 
+if "role" not in st.session_state:
+    st.session_state.role = None
+if "username" not in st.session_state:
+    st.session_state.username = None
+if "current_session_id" not in st.session_state:
+    st.session_state.current_session_id = None
 if "current_key_index" not in st.session_state:
     st.session_state.current_key_index = random.randint(0, len(API_KEYS) - 1)
 if "key_status" not in st.session_state:
     st.session_state.key_status = {i: "🟢 Sẵn sàng" for i in range(len(API_KEYS))}
-if "quota_cooldown" not in st.session_state:
-    st.session_state.quota_cooldown = {}
-if "img_reset_key" not in st.session_state:
-    st.session_state.img_reset_key = 0
 if "selected_persona" not in st.session_state:
     st.session_state.selected_persona = list(PERSONAS.keys())[0]
+if "quota_cooldown" not in st.session_state:
+    st.session_state.quota_cooldown = {}
 
 # 5. Hàm gọi API tương thích Cổng Trung Gian (Proxy Gateway)
 def query_gemini(prompt_text, history_list, image_data=None):
-    # LƯU Ý: Thay thế các tên model dưới đây bằng đúng định dạng tên model 
-    # mà trang cấp API thuê trả về (ví dụ thêm tiền tố tài khoản của bạn nếu có)
+    # Sử dụng các tên model chuẩn hoặc tên model có gắn tiền tố tài khoản của cổng thuê
     MODEL_TIERS = [
-        ["dungcsnd113/gemini-3.1-pro-preview", "gemini-3.1-pro-preview"], 
-        ["dungcsnd113/gemini-3.6-flash", "gemini-3.6-flash"],
-        ["dungcsnd113/gemini-3.5-flash-lite"]
+        ["gemini-3.1-pro-preview"],          
+        ["gemini-3.6-flash", "gemini-3.7-flash"], 
+        ["gemini-3.5-flash-lite"]     
     ]
 
     current_time = time.time()
     last_error = ""
     system_instruction = PERSONAS.get(st.session_state.selected_persona, "")
     all_keys_cooldown = True 
+    
     trimmed_history = history_list[-6:] if history_list else []
 
     for tier_idx, tier_models in enumerate(MODEL_TIERS):
@@ -134,7 +215,7 @@ def query_gemini(prompt_text, history_list, image_data=None):
             
             all_keys_cooldown = False 
             
-            # Gán key hiện tại vào môi trường cục bộ để SDK gọi qua gateway
+            # Gán key vào biến môi trường cục bộ để chuyển hướng qua gateway
             os.environ["GEMINI_API_KEY"] = API_KEYS[key_idx]
             genai.configure(api_key=API_KEYS[key_idx])
 
@@ -151,83 +232,295 @@ def query_gemini(prompt_text, history_list, image_data=None):
                         res = model.generate_content(prompt_text)
 
                     st.session_state.current_key_index = key_idx
+                    tier_labels = ["Pro", "Flash", "Lite"]
+                    tier_label = tier_labels[tier_idx] if tier_idx < len(tier_labels) else "Lite"
+                    st.session_state.key_status[key_idx] = f"🟢 Đang dùng ({tier_label})"
                     return res.text, model_name
 
                 except ResourceExhausted:
                     st.session_state.quota_cooldown[(key_idx, tier_idx)] = current_time + 60
-                    last_error = f"{model_name} hết quota"
+                    st.session_state.key_status[key_idx] = f"🟡 Hết Quota {model_name}"
+                    last_error = f"{model_name} hết quota (Lỗi 429)"
                     break 
                 except Exception as e:
-                    last_error = str(e)
+                    last_error = f"Lỗi {model_name}: {str(e)}"
                     continue
 
     if all_keys_cooldown:
-        return "⚠️ Tất cả các API Key đều đang chờ hồi phục quota.", "Error"
+        return "⚠️ **Tất cả các API Key đều đang hết Quota.**\n\nHệ thống đang trong thời gian đếm ngược (60 giây) để thử lại. Vui lòng đợi một lát!", "Error"
         
-    return f"⚠️ Lỗi kết nối API qua Gateway. Chi tiết: {last_error}", "Error"
+    return f"⚠️ **Các API Key hiện tại đang gặp lỗi kết nối.** \n\nVui lòng thử lại. \n*(Lỗi cuối: {last_error})*", "Error"
 
-# 6. Màn hình Đăng nhập (Giữ nguyên logic của bạn)
-if not st.session_state.get("auth_status", False):
-    _, col_box, _ = st.columns([1, 2, 1])
+# 6. Màn hình Đăng nhập
+if not st.session_state.auth_status:
+    col_space1, col_box, col_space2 = st.columns([1, 2, 1])
     with col_box:
+        st.write("<br><br>", unsafe_allow_html=True)
         st.markdown("<h2 style='text-align: center;'>✨ Đăng nhập Hệ thống AI</h2>", unsafe_allow_html=True)
-        mode = st.radio("Tư cách:", ["User", "Admin"], horizontal=True)
-        input_name = st.text_input("Username:", value="User_1") if mode == "User" else "Admin"
+        mode = st.radio("Tư cách đăng nhập:", ["User", "Admin"], horizontal=True)
+        input_name = st.text_input("Tên hiển thị (Username):", value="User_1") if mode == "User" else "Admin"
         input_pass = st.text_input("Mật khẩu:", type="password")
 
         if st.button("Tiếp tục", type="primary", use_container_width=True):
-            if (mode == "Admin" and input_pass == ADMIN_PASSWORD) or (mode == "User" and input_pass == USER_PASSWORD):
+            is_valid = False
+            if mode == "Admin" and input_pass == ADMIN_PASSWORD:
+                is_valid = True
+                st.session_state.role = "admin"
+            elif mode == "User" and input_pass == USER_PASSWORD:
+                is_valid = True
+                st.session_state.role = "user"
+
+            if is_valid:
                 st.session_state.auth_status = True
                 st.session_state.username = input_name.strip()
-                st.session_state.role = mode.lower()
                 st.query_params["user"] = st.session_state.username
                 st.query_params["role"] = st.session_state.role
+
+                if mode == "User":
+                    last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
+                    if last_sess:
+                        st.session_state.current_session_id = last_sess[0]
+                    else:
+                        new_id = str(uuid.uuid4())[:8]
+                        run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
+                        st.session_state.current_session_id = new_id
                 st.rerun()
             else:
-                st.error("Sai mật khẩu.")
+                st.error("Mật khẩu không chính xác.")
     st.stop()
 
-# 7. Giao diện Sidebar & Khung chat chính (Giữ nguyên toàn bộ cấu trúc cũ)
-active_sid = st.session_state.get("current_session_id")
-if st.session_state.role == "user" and not active_sid:
+# Khôi phục session ID
+if st.session_state.role == "user" and not st.session_state.current_session_id:
     last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
     if last_sess:
         st.session_state.current_session_id = last_sess[0]
-    else:
-        new_id = str(uuid.uuid4())[:8]
-        run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
-        st.session_state.current_session_id = new_id
-    active_sid = st.session_state.current_session_id
 
+# 7. Giao diện Sidebar
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
-    st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI:", list(PERSONAS.keys()))
+    st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI (Persona):", list(PERSONAS.keys()))
+    st.divider()
+
+    if st.session_state.role == "user":
+        if st.button("➕ Chat mới", use_container_width=True, type="primary"):
+            new_id = str(uuid.uuid4())[:8]
+            run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
+            st.session_state.current_session_id = new_id
+            st.rerun()
+
+        st.write("")
+        st.markdown("### 💬 Lịch sử trò chuyện")
+        user_sessions = run_query("SELECT id, title, is_pinned FROM sessions WHERE username = %s ORDER BY is_pinned DESC, created_at DESC", (st.session_state.username,), fetch="all")
+
+        if user_sessions:
+            for s_id, s_title, s_pin in user_sessions:
+                if not s_title:
+                    first_msg = run_query("SELECT content FROM messages WHERE session_id = %s AND role = 'user' ORDER BY id ASC LIMIT 1", (s_id,), fetch="one")
+                    s_title = first_msg[0][:18] + "..." if first_msg else "Phiên chat trống"
+
+                is_active = (s_id == st.session_state.current_session_id)
+                pin_icon = "📌 " if s_pin else ""
+
+                col_btn, col_opt = st.columns([0.75, 0.25])
+                with col_btn:
+                    if st.button(f"{pin_icon}{s_title}", key=f"btn_{s_id}", use_container_width=True, type="secondary" if not is_active else "primary"):
+                        st.session_state.current_session_id = s_id
+                        st.rerun()
+
+                with col_opt:
+                    with st.popover("⚙️"):
+                        pin_label = "📍 Bỏ ghim" if s_pin else "📌 Ghim lên đầu"
+                        if st.button(pin_label, key=f"pin_{s_id}"):
+                            toggle_pin_session(s_id, s_pin)
+                            st.rerun()
+
+                        new_title_input = st.text_input("Tên mới:", value=s_title, key=f"inp_{s_id}")
+                        if st.button("Lưu tên", key=f"ren_{s_id}"):
+                            if new_title_input.strip():
+                                update_session_title(s_id, new_title_input.strip())
+                                st.rerun()
+
+                        st.divider()
+                        if st.button("🗑️ Xóa chat", key=f"del_{s_id}", type="primary"):
+                            delete_session(s_id)
+                            if st.session_state.current_session_id == s_id:
+                                rem = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
+                                st.session_state.current_session_id = rem[0] if rem else None
+                            st.rerun()
+
+    elif st.session_state.role == "admin":
+        st.subheader("🛠 Quản trị viên")
+        all_s = run_query("SELECT id, username FROM sessions ORDER BY created_at DESC", fetch="all")
+        options = {f"{s[1]} - {s[0]}": s[0] for s in all_s} if all_s else {}
+        sel = st.selectbox("👁️ Theo dõi chat:", list(options.keys())) if options else None
+        if sel:
+            st.session_state.admin_selected_session = options[sel]
+
+        st.divider()
+        st.markdown("### 👥 Quản lý User")
+        all_users_res = run_query("SELECT DISTINCT username FROM sessions", fetch="all")
+        all_users = [u[0] for u in all_users_res] if all_users_res else []
+
+        if all_users:
+            selected_user_to_del = st.selectbox("Chọn User cần xóa:", all_users)
+            with st.popover(f"🗑️ Xóa User: {selected_user_to_del}"):
+                st.warning(f"⚠️ Thao tác này sẽ XÓA SẠCH toàn bộ dữ liệu lịch sử chat của user '{selected_user_to_del}'!")
+                if st.button("Xác nhận Xóa User", type="primary", key="confirm_del_user"):
+                    delete_user_data(selected_user_to_del)
+                    st.success(f"Đã xóa thành công User {selected_user_to_del}!")
+                    st.session_state.admin_selected_session = None
+                    st.rerun()
+        else:
+            st.caption("Chưa có User nào trong hệ thống.")
+
+    st.divider()
+
+    if st.session_state.role == "user":
+        with st.expander(f"👤 Tài khoản: {st.session_state.username}", expanded=False):
+            new_username = st.text_input("Đổi tên hiển thị:", value=st.session_state.username)
+            if st.button("Cập nhật tên"):
+                if new_username.strip() and new_username != st.session_state.username:
+                    update_username(st.session_state.username, new_username.strip())
+                    st.session_state.username = new_username.strip()
+                    st.query_params["user"] = st.session_state.username
+                    st.success("Đã đổi tên!")
+                    st.rerun()
+
+    with st.expander("🔑 Trạng thái API Keys", expanded=False):
+        for idx, status in st.session_state.key_status.items():
+            active_mark = "👈 (Đang dùng)" if idx == st.session_state.current_key_index else ""
+            st.caption(f"**Key #{idx+1}:** {status} {active_mark}")
+
     if st.button("Đăng xuất", use_container_width=True):
         st.session_state.auth_status = False
         st.query_params.clear()
         st.rerun()
 
-# Luồng xử lý chat chính
-db_messages = run_query("SELECT role, content FROM messages WHERE session_id = %s ORDER BY id ASC", (active_sid,), fetch="all") or [] if active_sid else []
+# 8. Màn hình Chat Chính
+active_sid = st.session_state.current_session_id if st.session_state.role == "user" else st.session_state.get("admin_selected_session")
 
+if not active_sid and st.session_state.role == "user":
+    new_id = str(uuid.uuid4())[:8]
+    run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
+    st.session_state.current_session_id = new_id
+    st.rerun()
+
+db_messages = []
+if active_sid:
+    db_messages = run_query("SELECT role, content FROM messages WHERE session_id = %s ORDER BY id ASC", (active_sid,), fetch="all") or []
+
+if db_messages:
+    chat_text = "\n\n".join([f"**{m[0].upper()}**: {m[1]}" for m in db_messages])
+    st.download_button("📥 Tải lịch sử chat (.md)", data=chat_text, file_name=f"chat_{active_sid}.md", mime="text/markdown")
+
+if not db_messages and st.session_state.role == "user":
+    st.write("<br>", unsafe_allow_html=True)
+    st.markdown(f"<h1 style='background: -webkit-linear-gradient(45deg, #4285F4, #D96570); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>Xin chào, {st.session_state.username}</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color: #666;'>Tôi có thể giúp gì cho bạn hôm nay?</h3>", unsafe_allow_html=True)
+
+    st.write("<br>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    quick_prompt = None
+    if c1.button("💡 Kế hoạch du lịch 3 ngày 2 đêm", use_container_width=True):
+        quick_prompt = "Hãy lập cho tôi kế hoạch du lịch Đà Nẵng 3 ngày 2 đêm tối ưu chi phí."
+    if c2.button("💻 Viết code Python đọc file Excel", use_container_width=True):
+        quick_prompt = "Hướng dẫn viết code Python dùng pandas để đọc và xử lý file Excel."
+    if c3.button("✍️ Viết Email xin nghỉ phép lịch sự", use_container_width=True):
+        quick_prompt = "Soạn cho tôi một mẫu email xin nghỉ phép 2 ngày vì lý do cá nhân."
+
+    if quick_prompt:
+        run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, quick_prompt))
+        st.rerun()
+
+# Render lịch sử tin nhắn
 gemini_history = []
 for role, content in db_messages:
     with st.chat_message(role):
-        st.markdown(content, unsafe_style=True if 'unsafe_style' in locals() else None)
+        st.markdown(content, unsafe_allow_html=True)
     g_role = "user" if role == "user" else "model"
     clean_content = content.split("<div style='text-align: right")[0].strip()
     gemini_history.append({"role": g_role, "parts": [clean_content]})
 
-if prompt := st.chat_input("Nhập câu hỏi..."):
+# Bộ chọn/dán ảnh
+col_up, col_paste = st.columns([0.6, 0.4])
+reset_k = st.session_state.img_reset_key
+
+with col_up:
+    uploaded_file = st.file_uploader("🖼️ Tải ảnh từ máy:", type=["jpg", "jpeg", "png", "webp"], label_visibility="collapsed", key=f"uploader_{reset_k}")
+
+with col_paste:
+    paste_result = paste_image_button(label="📋 Dán ảnh từ Clipboard (Ctrl+V)", background_color="#4285F4", hover_background_color="#3367D6", text_color="#ffffff", key=f"paste_btn_{reset_k}")
+
+img_data = None
+if uploaded_file:
+    img_data = Image.open(uploaded_file)
+elif paste_result is not None and getattr(paste_result, "image_data", None) is not None:
+    img_data = paste_result.image_data
+
+if img_data:
+    col_img_view, col_img_del = st.columns([0.7, 0.3])
+    with col_img_view:
+        st.image(img_data, caption="Ảnh chờ gửi", width=180)
+    with col_img_del:
+        if st.button("❌ Hủy/Xóa ảnh", key=f"del_img_{reset_k}"):
+            st.session_state.img_reset_key += 1
+            st.rerun()
+
+# Badge hiển thị trạng thái
+active_status = st.session_state.key_status.get(st.session_state.current_key_index, "")
+if "Pro" in active_status:
+    badge_label = "Pro 3.1"
+elif "Flash" in active_status:
+    badge_label = "Flash 3.6"
+else:
+    badge_label = "Flash-Lite"
+
+st.markdown(f"""
+<style>
+.gemini-badge {{
+    position: fixed;
+    bottom: 92px;
+    right: max(20px, calc(50% - 430px));
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #444746;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    pointer-events: none;
+}}
+@media (max-width: 768px) {{
+    .gemini-badge {{ right: 15px; bottom: 82px; }}
+}}
+</style>
+<div class="gemini-badge">✨ {badge_label} ⌄</div>
+""", unsafe_allow_html=True)
+
+# Luồng xử lý chat
+if prompt := st.chat_input("Nhập câu hỏi của bạn tại đây..."):
     with st.chat_message("user"):
+        if img_data:
+            st.image(img_data, width=200)
         st.markdown(prompt)
-    run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, prompt))
+
+    user_msg_store = prompt if not img_data else f"[Đã gửi 1 hình ảnh] {prompt}"
+    run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'user', %s)", (active_sid, user_msg_store))
 
     with st.chat_message("assistant"):
         with st.spinner("Đang suy luận..."):
-            reply, used_model = query_gemini(prompt, gemini_history)
+            reply, used_model = query_gemini(prompt, gemini_history, image_data=img_data)
             st.markdown(reply)
 
-    reply_to_db = reply if used_model == "Error" else reply + f"\n\n<div style='text-align: right; font-size: 11px; color: #888;'>(Model: {used_model})</div>"
+    reply_to_db = reply if used_model == "Error" else reply + f"\n\n<div style='text-align: right; font-size: 11px; color: #888; font-style: italic;'>(Trả lời bằng: {used_model})</div>"
     run_query("INSERT INTO messages (session_id, role, content) VALUES (%s, 'assistant', %s)", (active_sid, reply_to_db))
+
+    if img_data:
+        st.session_state.img_reset_key += 1
+
     st.rerun()
