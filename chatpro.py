@@ -213,43 +213,55 @@ if not st.session_state.auth_status:
             if mode == "Admin" and input_pass == ADMIN_PASSWORD:
                 is_valid = True
                 st.session_state.role = "admin"
+                st.session_state.username = "Admin"
             elif mode == "User" and input_pass == USER_PASSWORD:
                 is_valid = True
                 st.session_state.role = "user"
+                st.session_state.username = input_name.strip()
 
             if is_valid:
                 st.session_state.auth_status = True
-                st.session_state.username = input_name.strip()
                 st.query_params["user"] = st.session_state.username
                 st.query_params["role"] = st.session_state.role
 
-                if mode == "User":
-                    last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
-                    if last_sess:
-                        st.session_state.current_session_id = last_sess[0]
-                    else:
-                        new_id = str(uuid.uuid4())[:8]
-                        run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
-                        st.session_state.current_session_id = new_id
+                # Tự động tạo hoặc lấy session gần nhất cho cả User và Admin
+                target_user = st.session_state.username
+                last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (target_user,), fetch="one")
+                if last_sess:
+                    st.session_state.current_session_id = last_sess[0]
+                else:
+                    new_id = str(uuid.uuid4())[:8]
+                    run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, target_user, str(datetime.datetime.now())))
+                    st.session_state.current_session_id = new_id
                 st.rerun()
             else:
                 st.error("Mật khẩu không chính xác.")
     st.stop()
 
-# Đảm bảo session được neo chặt
-if st.session_state.role == "user":
-    if not st.session_state.current_session_id:
-        last_sess = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
-        if last_sess:
-            st.session_state.current_session_id = last_sess[0]
-        else:
-            new_id = str(uuid.uuid4())[:8]
-            run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
-            st.session_state.current_session_id = new_id
+# Đảm bảo session luôn được neo chặt cho cả User lẫn Admin
+if not st.session_state.current_session_id:
+    target_user = st.session_state.username
+    user_sessions = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC", (target_user,), fetch="all")
+    found_sid = None
+    if user_sessions:
+        for (s_id,) in user_sessions:
+            msg_count = run_query("SELECT COUNT(*) FROM messages WHERE session_id = %s", (s_id,), fetch="one")
+            if msg_count and msg_count[0] > 0:
+                found_sid = s_id
+                break
+        if not found_sid:
+            found_sid = user_sessions[0][0]
+    
+    if found_sid:
+        st.session_state.current_session_id = found_sid
+    else:
+        new_id = str(uuid.uuid4())[:8]
+        run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, target_user, str(datetime.datetime.now())))
+        st.session_state.current_session_id = new_id
 
-active_sid = st.session_state.current_session_id if st.session_state.role == "user" else st.session_state.get("admin_selected_session")
+active_sid = st.session_state.current_session_id
 
-# 7. Giao diện Sidebar (Đã cập nhật cả 2 model bạn muốn)
+# 7. Giao diện Sidebar
 with st.sidebar:
     st.title("✨ Gemini Clone Pro")
     st.session_state.selected_persona = st.selectbox("🎭 Vai trò AI (Persona):", list(PERSONAS.keys()))
@@ -265,52 +277,52 @@ with st.sidebar:
     selected_model = st.selectbox("Chọn Model sử dụng:", AVAILABLE_MODELS)
     st.divider()
 
-    if st.session_state.role == "user":
-        if st.button("➕ Chat mới", use_container_width=True, type="primary"):
-            new_id = str(uuid.uuid4())[:8]
-            run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
-            st.session_state.current_session_id = new_id
-            st.rerun()
+    # Nút chat mới cho cả User và Admin
+    if st.button("➕ Chat mới", use_container_width=True, type="primary"):
+        new_id = str(uuid.uuid4())[:8]
+        run_query("INSERT INTO sessions (id, username, created_at) VALUES (%s, %s, %s)", (new_id, st.session_state.username, str(datetime.datetime.now())))
+        st.session_state.current_session_id = new_id
+        st.rerun()
 
-        st.write("")
-        st.markdown("### 💬 Lịch sử trò chuyện")
-        user_sessions = run_query("SELECT id, title, is_pinned FROM sessions WHERE username = %s ORDER BY is_pinned DESC, created_at DESC", (st.session_state.username,), fetch="all")
+    st.write("")
+    st.markdown("### 💬 Lịch sử trò chuyện")
+    user_sessions = run_query("SELECT id, title, is_pinned FROM sessions WHERE username = %s ORDER BY is_pinned DESC, created_at DESC", (st.session_state.username,), fetch="all")
 
-        if user_sessions:
-            for s_id, s_title, s_pin in user_sessions:
-                if not s_title:
-                    first_msg = run_query("SELECT content FROM messages WHERE session_id = %s AND role = 'user' ORDER BY id ASC LIMIT 1", (s_id,), fetch="one")
-                    s_title = first_msg[0][:18] + "..." if first_msg else "Phiên chat trống"
+    if user_sessions:
+        for s_id, s_title, s_pin in user_sessions:
+            if not s_title:
+                first_msg = run_query("SELECT content FROM messages WHERE session_id = %s AND role = 'user' ORDER BY id ASC LIMIT 1", (s_id,), fetch="one")
+                s_title = first_msg[0][:18] + "..." if first_msg else "Phiên chat trống"
 
-                is_active = (s_id == st.session_state.current_session_id)
-                pin_icon = "📌 " if s_pin else ""
+            is_active = (s_id == active_sid)
+            pin_icon = "📌 " if s_pin else ""
 
-                col_btn, col_opt = st.columns([0.75, 0.25])
-                with col_btn:
-                    if st.button(f"{pin_icon}{s_title}", key=f"btn_{s_id}", use_container_width=True, type="secondary" if not is_active else "primary"):
-                        st.session_state.current_session_id = s_id
+            col_btn, col_opt = st.columns([0.75, 0.25])
+            with col_btn:
+                if st.button(f"{pin_icon}{s_title}", key=f"btn_{s_id}", use_container_width=True, type="secondary" if not is_active else "primary"):
+                    st.session_state.current_session_id = s_id
+                    st.rerun()
+
+            with col_opt:
+                with st.popover("⚙️"):
+                    pin_label = "📍 Bỏ ghim" if s_pin else "📌 Ghim lên đầu"
+                    if st.button(pin_label, key=f"pin_{s_id}"):
+                        toggle_pin_session(s_id, s_pin)
                         st.rerun()
 
-                with col_opt:
-                    with st.popover("⚙️"):
-                        pin_label = "📍 Bỏ ghim" if s_pin else "📌 Ghim lên đầu"
-                        if st.button(pin_label, key=f"pin_{s_id}"):
-                            toggle_pin_session(s_id, s_pin)
+                    new_title_input = st.text_input("Tên mới:", value=s_title, key=f"inp_{s_id}")
+                    if st.button("Lưu tên", key=f"ren_{s_id}"):
+                        if new_title_input.strip():
+                            update_session_title(s_id, new_title_input.strip())
                             st.rerun()
 
-                        new_title_input = st.text_input("Tên mới:", value=s_title, key=f"inp_{s_id}")
-                        if st.button("Lưu tên", key=f"ren_{s_id}"):
-                            if new_title_input.strip():
-                                update_session_title(s_id, new_title_input.strip())
-                                st.rerun()
-
-                        st.divider()
-                        if st.button("🗑️ Xóa chat", key=f"del_{s_id}", type="primary"):
-                            delete_session(s_id)
-                            if st.session_state.current_session_id == s_id:
-                                rem = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
-                                st.session_state.current_session_id = rem[0] if rem else None
-                            st.rerun()
+                    st.divider()
+                    if st.button("🗑️ Xóa chat", key=f"del_{s_id}", type="primary"):
+                        delete_session(s_id)
+                        if active_sid == s_id:
+                            rem = run_query("SELECT id FROM sessions WHERE username = %s ORDER BY created_at DESC LIMIT 1", (st.session_state.username,), fetch="one")
+                            st.session_state.current_session_id = rem[0] if rem else None
+                        st.rerun()
 
     if st.button("Đăng xuất", use_container_width=True):
         st.session_state.auth_status = False
@@ -326,7 +338,7 @@ if db_messages:
     chat_text = "\n\n".join([f"**{m[0].upper()}**: {m[1]}" for m in db_messages])
     st.download_button("📥 Tải lịch sử chat (.md)", data=chat_text, file_name=f"chat_{active_sid}.md", mime="text/markdown")
 
-if not db_messages and st.session_state.role == "user":
+if not db_messages:
     st.write("<br>", unsafe_allow_html=True)
     st.markdown(f"<h1 style='background: -webkit-linear-gradient(45deg, #4285F4, #D96570); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>Xin chào, {st.session_state.username}</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='color: #666;'>Tôi có thể giúp gì cho bạn hôm nay?</h3>", unsafe_allow_html=True)
